@@ -156,74 +156,107 @@ mod v2 {
     }
 
     macro_rules! make_rtc {
-    ($backend_name:ident, $pac_rtc:ty, $interrupt_rtc:ident, $tq:ident$(, doc: ($($doc:tt)*))?) => {
-        /// RTC based [`TimerQueueBackend`].
-        $(
-            #[cfg_attr(docsrs, doc(cfg($($doc)*)))]
-        )?
-        pub struct $backend_name;
+        ($backend_name:ident, $pac_rtc:ty, $interrupt_rtc:ident, $tq:ident$(, doc: ($($doc:tt)*))?) => {
+            /// RTC based [`TimerQueueBackend`].
+            $(
+                #[cfg_attr(docsrs, doc(cfg($($doc)*)))]
+            )?
+            pub struct $backend_name;
 
-        static $tq: TimerQueue<$backend_name> = TimerQueue::new();
+            static $tq: TimerQueue<$backend_name> = TimerQueue::new();
 
-        impl $backend_name {
-            #[inline]
-            fn steal_rtc() -> Rtc<Count32Mode> {
-                Rtc {
-                    rtc: unsafe { <$pac_rtc>::steal() },
-                    rtc_clock_freq: HertzU32::from_raw(CLOCK_FREQ),
-                    _mode: PhantomData::<Count32Mode>::default(),
+            impl $backend_name {
+                #[inline]
+                fn steal_rtc() -> Rtc<Count32Mode> {
+                    Rtc {
+                        rtc: unsafe { <$pac_rtc>::steal() },
+                        rtc_clock_freq: HertzU32::from_raw(CLOCK_FREQ),
+                        _mode: PhantomData::<Count32Mode>::default(),
+                    }
+                }
+
+                /// Starts the clock.
+                ///
+                /// **Do not use this function directly.**
+                ///
+                /// Use the [`rtc_monotonic`] macro instead.
+                pub fn _start(rtc: $pac_rtc, mclk: &mut pac::Mclk) {
+                    // Initialize the RTC as a counter
+                    let mut rtc = Rtc::count32_mode(rtc, HertzU32::from_raw(CLOCK_FREQ), mclk);
+
+                    // Initialize the timer queue
+                    $tq.initialize(Self {});
+
+                    // Enable the compare interrupt
+                    rtc.enable_interrupt();
+
+                    // Reset the count
+                    rtc.reset();
+
+                    // TODO: Need to enable the RTC interrupt and set its priority
+                    // SAFETY: We take full ownership of the peripheral and interrupt vector,
+                    // plus we are not using any external shared resources so we won't impact
+                    // basepri/source masking based critical sections.
+                    unsafe {
+                        set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::$interrupt_rtc);
+                        pac::NVIC::unmask(pac::Interrupt::$interrupt_rtc);
+                    }
                 }
             }
 
-            /// Starts the clock.
-            ///
-            /// **Do not use this function directly.**
-            ///
-            /// Use the [`rtc_monotonic`] macro instead.
-            pub fn _start(rtc: $pac_rtc, mclk: &mut pac::Mclk) {
-                // Initialize the RTC as a counter
-                let mut rtc = Rtc::count32_mode(rtc, HertzU32::from_raw(CLOCK_FREQ), mclk);
+            impl TimerQueueBackend for $backend_name {
+                type Ticks = u32;
 
-                // Initialize the timer queue
-                $tq.initialize(Self {});
+                fn now() -> Self::Ticks {
+                Self::steal_rtc().count32()
+                }
 
-                // Enable the compare interrupt
-                rtc.enable_interrupt();
+                fn set_compare(instant: Self::Ticks) {
+                    unsafe {
+                        <$pac_rtc>::steal().mode0()
+                            .comp(0)
+                            .write(|w| w.comp().bits(instant))
+                    }
+                }
 
-                // Reset the count
-                rtc.reset();
-            }
-        }
+                fn clear_compare_flag() {
+                    unsafe { <$pac_rtc>::steal().mode0().intflag().write(|w| w.cmp0().set_bit()); }
+                }
 
-        impl TimerQueueBackend for $backend_name {
-            type Ticks = u32;
+                fn pend_interrupt() {
+                    pac::NVIC::pend(pac::Interrupt::$interrupt_rtc);
+                }
 
-            fn now() -> Self::Ticks {
-               Self::steal_rtc().count32()
-            }
-
-            fn set_compare(instant: Self::Ticks) {
-                unsafe {
-                    <$pac_rtc>::steal().mode0()
-                        .comp(0)
-                        .write(|w| w.comp().bits(instant))
+                fn timer_queue() -> &'static TimerQueue<Self> {
+                    &$tq
                 }
             }
+        };
+    }
 
-            fn clear_compare_flag() {
-                unsafe { <$pac_rtc>::steal().mode0().intflag().write(|w| w.cmp0().set_bit()); }
-            }
+    const fn cortex_logical2hw(logical: u8, nvic_prio_bits: u8) -> u8 {
+        ((1 << nvic_prio_bits) - logical) << (8 - nvic_prio_bits)
+    }
 
-            fn pend_interrupt() {
-                pac::NVIC::pend(pac::Interrupt::$interrupt_rtc);
-            }
-
-            fn timer_queue() -> &'static TimerQueue<Self> {
-                &$tq
-            }
+    unsafe fn set_monotonic_prio(
+        prio_bits: u8,
+        interrupt: impl cortex_m::interrupt::InterruptNumber,
+    ) {
+        extern "C" {
+            static RTIC_ASYNC_MAX_LOGICAL_PRIO: u8;
         }
-    };
-}
+
+        let max_prio = RTIC_ASYNC_MAX_LOGICAL_PRIO.max(1).min(1 << prio_bits);
+
+        let hw_prio = cortex_logical2hw(max_prio, prio_bits);
+
+        // We take ownership of the entire IRQ and all settings to it, we only change
+        // settings for the IRQ we control.
+        // This will also compile-error in case the NVIC changes in size.
+        let mut nvic: cortex_m::peripheral::NVIC = core::mem::transmute(());
+
+        nvic.set_priority(interrupt, hw_prio);
+    }
 
     make_rtc!(RtcBackend, pac::Rtc, RTC, RTC_TQ);
 }
