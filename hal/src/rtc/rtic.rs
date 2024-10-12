@@ -32,7 +32,7 @@
 //! ```
 
 use super::{Count32Mode, Rtc};
-use atsamd_hal_macros::{hal_cfg, hal_macro_helper};
+use atsamd_hal_macros::hal_macro_helper;
 
 pub use v2::*;
 
@@ -170,33 +170,50 @@ mod v2 {
             while rtc.mode2().status().read().syncbusy().bit_is_set() {}
         }
 
+        #[inline]
+        #[hal_macro_helper]
+        fn count(rtc: &pac::Rtc) -> u32 {
+            // Synchronize this read on SAMD11/21. SAMx5x is automatically synchronized
+            #[hal_cfg(any("rtc-d11", "rtc-d21"))]
+            {
+                rtc.mode0().readreq().modify(|_, w| w.rcont().set_bit());
+                Self::sync(rtc);
+            }
+            rtc.mode0().count().read().bits()
+        }
+
         /// Starts the clock.
         ///
         /// **Do not use this function directly.**
         ///
         /// Use the [`rtc_monotonic`] macro instead.
         pub fn _start(rtc: pac::Rtc, mclk: &mut pac::Mclk) {
-            // TODO: Look into what this does exactly, possibly selects
-            // the 32 kHz clock for the RTC.
+            // Enables the APBA clock for the RTC.
             mclk.apbamask().modify(|_, w| w.rtc_().set_bit());
 
             // It is necessary to disable the RTC before resetting it.
-            // NOTE: This register and field are the same in all modes)
+            // NOTE: This register and field are the same in all modes.
             rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
             Self::sync(&rtc);
 
             // Reset RTC back to initial settings, which disables it and enters mode 0 by
-            // default.
+            // default
             rtc.mode0().ctrla().modify(|_, w| w.swrst().set_bit());
+            // Wait for the reset to complete
+            while rtc.mode0().ctrla().read().swrst().bit_is_set() {}
+
+            // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
+            #[hal_cfg("rtc-d5x")]
+            {
+                rtc.mode0().ctrla().modify(|_, w| w.countsync().set_bit());
+            }
+
+            // Start the counter.
+            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
             Self::sync(&rtc);
 
-            // TODO: Enable and enable clock sync
-            /*
-            self.mode2_ctrla().modify(|_, w| {
-                w.clocksync().set_bit() // synchronize the CLOCK register
-            });
-
-            self.sync(); */
+            while Self::count(&rtc) < 5000 {}
+            panic!();
 
             // Initialize the RTC as a counter
             // TODO: This resets the RTC then enables the clock and waits for sync to
@@ -208,11 +225,6 @@ mod v2 {
             while rtc.count32() < 1 {}
             //while InterruptDrivenTimer::wait(&mut rtc).is_err() {}
             panic!();
-
-            // TODO: Should we completely reset the peripheral here?
-            // Reset the counter
-            //rtc.reset();
-            //while rtc.mode0_ctrla().read().swrst().bit_is_set() {}
 
             // Enable the compare interrupt
             rtc.enable_interrupt();
