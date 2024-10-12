@@ -108,10 +108,14 @@ mod v2 {
                 /// Starts the `Monotonic`.
                 ///
                 /// This method must be called only once.
-                pub fn start(rtc: $pac_rtc, mclk: &mut $crate::pac::Mclk) {
+                pub fn start(
+                    rtc: $pac_rtc,
+                    mclk: &mut $crate::pac::Mclk,
+                    osc32kctrl: &mut $crate::pac::Osc32kctrl,
+                ) {
                     $crate::__internal_create_rtc_interrupt!($mono_backend, $interrupt_rtc);
 
-                    $crate::rtc::rtic::$mono_backend::_start(rtc, mclk);
+                    $crate::rtc::rtic::$mono_backend::_start(rtc, mclk, osc32kctrl);
                 }
             }
 
@@ -187,7 +191,7 @@ mod v2 {
         /// **Do not use this function directly.**
         ///
         /// Use the [`rtc_monotonic`] macro instead.
-        pub fn _start(rtc: pac::Rtc, mclk: &mut pac::Mclk) {
+        pub fn _start(rtc: pac::Rtc, mclk: &mut pac::Mclk, osc32kctrl: &mut pac::Osc32kctrl) {
             // Enables the APBA clock for the RTC.
             mclk.apbamask().modify(|_, w| w.rtc_().set_bit());
 
@@ -202,6 +206,10 @@ mod v2 {
             // Wait for the reset to complete
             while rtc.mode0().ctrla().read().swrst().bit_is_set() {}
 
+            // Set the RTC clock source
+            // TODO: How to we set this generically so that the user can choose?
+            osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp1k());
+
             // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
             #[hal_cfg("rtc-d5x")]
             {
@@ -212,7 +220,7 @@ mod v2 {
             rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
             Self::sync(&rtc);
 
-            while Self::count(&rtc) < 5000 {}
+            while Self::count(&rtc) < 1024 {}
             panic!();
 
             // Initialize the RTC as a counter
