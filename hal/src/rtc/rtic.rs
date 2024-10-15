@@ -95,18 +95,25 @@ mod v2 {
             unsafe extern "C" fn $interrupt_rtc() {
                 use $crate::rtic_time::timer_queue::TimerQueueBackend;
 
-                // TODO delete
-                /* let rtc = $crate::pac::Rtc::steal();
-                if rtc.mode0().intflag().read().bits() != 0 {
-                    if rtc.mode0().intflag().read().bits() == 0x0200 {
-                        //if rtc.mode0().intenclr().read().cmp1().bit_is_set() {
-                        panic!();
-                        //}
+                // TODO: We will eventually need period/overflow stuff handled here
+                let rtc = unsafe { $crate::pac::Rtc::steal() };
+
+                // For some strange reason that was unable to be determined, often the compare
+                // interrupt will trigger, but the count will be less than the compare value,
+                // even after syncing, which causes the TimerQueue to not register that the
+                // timeout is up. Testing showed that usually the count is only one less than
+                // the compare. We correct for this here by waiting until the counter reaches
+                // the compare value.
+                if rtc.mode0().intflag().read().cmp0().bit_is_set() {
+                    let compare = rtc.mode0().comp(0).read().bits();
+                    loop {
+                        let counter = $crate::rtc::rtic::$mono_backend::now();
+
+                        if counter >= compare {
+                            break;
+                        }
                     }
-                } */
-                /* if rtc.mode0().intflag().read().cmp0().bit_is_set() {
-                    panic!();
-                } */
+                }
 
                 $crate::rtc::rtic::$mono_backend::timer_queue().on_monotonic_interrupt();
             }
@@ -192,11 +199,6 @@ mod v2 {
 
     #[hal_macro_helper]
     impl RtcBackend {
-        // TODO: test
-        /* fn toggle_led() {
-            let red_led = pins.led_pin.into();
-        } */
-
         #[inline]
         fn sync(rtc: &pac::Rtc) {
             #[hal_cfg("rtc-d5x")]
@@ -305,71 +307,23 @@ mod v2 {
         }
 
         fn on_interrupt() {
-            // TODO: We will eventually need period/overflow stuff handled here
-            let rtc = unsafe { pac::Rtc::steal() };
-
-            static mut count: u32 = 0;
-
-            unsafe {
-                count += 1;
-
-                // After 750 ms
-                /* if count > 1 {
-                    if Self::count(&rtc) < 100 {
-                        panic!();
-                    }
-                } */
-            }
+            // TODO: will eventaully need something here
         }
 
         fn set_compare(instant: Self::Ticks) {
             let rtc = unsafe { pac::Rtc::steal() };
             unsafe { rtc.mode0().comp(0).write(|w| w.comp().bits(instant)) };
             Self::sync(&rtc);
-
-            static mut count: u32 = 0;
-
-            unsafe {
-                count += 1;
-
-                // Happening at the start, why is this getting called twice,
-                // first for 1 sec and then for 750 ms, wtf, not
-                // how the queue is supposed to work.
-                /* if count == 1 {
-                    if instant > 100 {
-                        panic!();
-                    }
-                } */
-                /* if count == 2 {
-                    if instant < 1000 {
-                        panic!();
-                    }
-                } */
-
-                // After 750 ms
-                /* if count > 2 {
-                    panic!();
-                } */
-            }
         }
 
         fn clear_compare_flag() {
             let rtc = unsafe { pac::Rtc::steal() };
             rtc.mode0().intflag().modify(|_, w| w.cmp0().set_bit());
+            // NOTE: Should not need to sync here
         }
 
         fn pend_interrupt() {
             pac::NVIC::pend(pac::Interrupt::RTC);
-
-            static mut count: u32 = 0;
-
-            unsafe {
-                count += 1;
-
-                if count > 2 {
-                    panic!();
-                }
-            }
         }
 
         fn timer_queue() -> &'static TimerQueue<Self> {
