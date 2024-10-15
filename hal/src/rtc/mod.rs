@@ -234,6 +234,10 @@ impl Rtc<Count32Mode> {
     pub fn count32_mode(rtc: pac::Rtc, rtc_clock_freq: Hertz, pm: &mut Pm) -> Self {
         pm.apbamask().modify(|_, w| w.rtc_().set_bit());
 
+        // TODO: This may not work properly because here the count sync bit is not set
+        // as it is in Self::into_count32_mode Maybe we can just call that to
+        // avoid code duplication
+
         let mut new_rtc = Self {
             rtc,
             rtc_clock_freq,

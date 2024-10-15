@@ -39,13 +39,12 @@ pub use v2::*;
 /// The RTC clock frequency in Hz.
 pub const CLOCK_FREQ: u32 = 32_768;
 
-// TODO: can these be moved into v1 if not needed for v2?
-type Instant = fugit::Instant<u32, 1, CLOCK_FREQ>;
-type Duration = fugit::Duration<u32, 1, CLOCK_FREQ>;
-
 mod v1 {
     use super::*;
     use rtic_monotonic::Monotonic;
+
+    type Instant = fugit::Instant<u32, 1, CLOCK_FREQ>;
+    type Duration = fugit::Duration<u32, 1, CLOCK_FREQ>;
 
     impl Monotonic for Rtc<Count32Mode> {
         type Instant = Instant;
@@ -79,8 +78,11 @@ mod v1 {
 }
 
 mod v2 {
+    use core::u32;
+
     use super::*;
     use crate::{pac, timer_traits::InterruptDrivenTimer};
+    use atsamd51j::rtc::mode0;
     use fugit::HertzU32;
     use rtic_time::timer_queue::{TimerQueue, TimerQueueBackend};
 
@@ -92,6 +94,20 @@ mod v2 {
             #[allow(non_snake_case)]
             unsafe extern "C" fn $interrupt_rtc() {
                 use $crate::rtic_time::timer_queue::TimerQueueBackend;
+
+                // TODO delete
+                /* let rtc = $crate::pac::Rtc::steal();
+                if rtc.mode0().intflag().read().bits() != 0 {
+                    if rtc.mode0().intflag().read().bits() == 0x0200 {
+                        //if rtc.mode0().intenclr().read().cmp1().bit_is_set() {
+                        panic!();
+                        //}
+                    }
+                } */
+                /* if rtc.mode0().intflag().read().cmp0().bit_is_set() {
+                    panic!();
+                } */
+
                 $crate::rtc::rtic::$mono_backend::timer_queue().on_monotonic_interrupt();
             }
         };
@@ -124,13 +140,23 @@ mod v2 {
                 type Instant = $crate::fugit::Instant<
                     <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                     1,
+                    1_024,
+                >;
+                type Duration = $crate::fugit::Duration<
+                    <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
+                    1,
+                    1_024,
+                >;
+                /* type Instant = $crate::fugit::Instant<
+                    <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
+                    1,
                     32_768,
                 >;
                 type Duration = $crate::fugit::Duration<
                     <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                     1,
                     32_768,
-                >;
+                >; */
             }
 
             $crate::rtic_time::impl_embedded_hal_delay_fugit!($name);
@@ -166,6 +192,11 @@ mod v2 {
 
     #[hal_macro_helper]
     impl RtcBackend {
+        // TODO: test
+        /* fn toggle_led() {
+            let red_led = pins.led_pin.into();
+        } */
+
         #[inline]
         fn sync(rtc: &pac::Rtc) {
             #[hal_cfg("rtc-d5x")]
@@ -177,12 +208,20 @@ mod v2 {
         #[inline]
         #[hal_macro_helper]
         fn count(rtc: &pac::Rtc) -> u32 {
-            // Synchronize this read on SAMD11/21. SAMx5x is automatically synchronized
             #[hal_cfg(any("rtc-d11", "rtc-d21"))]
             {
                 rtc.mode0().readreq().modify(|_, w| w.rcont().set_bit());
-                Self::sync(rtc);
             }
+            #[hal_cfg("rtc-d5x")]
+            {
+                // Read the register once to trigger the sync
+                // NOTE: The count may behind, which can cause problems for determining if a
+                // timeout is up.
+                rtc.mode0().count().read().bits();
+            }
+
+            // Wait for the sync to complete then read the register
+            Self::sync(rtc);
             rtc.mode0().count().read().bits()
         }
 
@@ -200,15 +239,30 @@ mod v2 {
             rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
             Self::sync(&rtc);
 
-            // Reset RTC back to initial settings, which disables it and enters mode 0 by
-            // default
+            // Initialize the timer queue
+            // TODO: When should we actually do this?
+            RTC_TQ.initialize(Self {});
+
+            // Reset RTC back to initial settings, which disables it and enters mode 0.
             rtc.mode0().ctrla().modify(|_, w| w.swrst().set_bit());
             // Wait for the reset to complete
             while rtc.mode0().ctrla().read().swrst().bit_is_set() {}
 
-            // Set the RTC clock source
+            // Set the RTC clock source.
             // TODO: How to we set this generically so that the user can choose?
             osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp1k());
+            //osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp32k());
+
+            // Set the compare for a long time in the future.
+            // NOTE: Setting it to zero would immediately trigger an interrupt on the next
+            // tick. TODO: Will eventually need half periods
+            unsafe {
+                rtc.mode0().comp(0).write(|w| w.comp().bits(u32::MAX));
+            }
+            Self::sync(&rtc);
+
+            // Enable the compare interrupt.
+            rtc.mode0().intenset().write(|w| w.cmp0().set_bit());
 
             // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
             #[hal_cfg("rtc-d5x")]
@@ -216,51 +270,17 @@ mod v2 {
                 rtc.mode0().ctrla().modify(|_, w| w.countsync().set_bit());
             }
 
-            // Start the counter.
+            // Start the RTC counter.
             rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
             Self::sync(&rtc);
 
-            while Self::count(&rtc) < 1024 {}
-            panic!();
-
-            // Initialize the RTC as a counter
-            // TODO: This resets the RTC then enables the clock and waits for sync to
-            // complete
-            let mut rtc = Rtc::count32_mode(rtc, HertzU32::from_raw(CLOCK_FREQ), mclk);
-
-            // TODO test code to just set a timer and see if it triggers
-            //while rtc.count32() < 100 {}
-            while rtc.count32() < 1 {}
-            //while InterruptDrivenTimer::wait(&mut rtc).is_err() {}
-            panic!();
-
-            // Enable the compare interrupt
-            rtc.enable_interrupt();
-
-            // TODO: Need to enable the RTC interrupt and set its priority
-            // SAFETY: We take full ownership of the peripheral and interrupt vector,
-            // plus we are not using any external shared resources so we won't impact
-            // basepri/source masking based critical sections.
+            // Enable the RTC interrupt in the NVIC and set its priority.
+            // TODO: If we keep this in the HAL is there a different way to do
+            // it that does not involve copying the
+            // `set_monotonic_prio` from `rtic-monotonics`?
             unsafe {
                 set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
                 pac::NVIC::unmask(pac::Interrupt::RTC);
-            }
-
-            // Initialize the timer queue
-            // TODO: When should we actually do this?
-            RTC_TQ.initialize(Self {});
-
-            unsafe {
-                let rtc = pac::Rtc::steal();
-
-                rtc.mode0().comp(0).write(|w| w.comp().bits(100));
-                loop {
-                    if rtc.mode0().intflag().read().cmp0().bit_is_set() {
-                        break;
-                    }
-                }
-
-                panic!();
             }
         }
     }
@@ -269,29 +289,87 @@ mod v2 {
         type Ticks = u32;
 
         fn now() -> Self::Ticks {
-            todo!()
+            Self::count(unsafe { &pac::Rtc::steal() })
+        }
+
+        fn enable_timer() {
+            let rtc = unsafe { pac::Rtc::steal() };
+            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
+            Self::sync(&rtc);
+        }
+
+        fn disable_timer() {
+            let rtc = unsafe { pac::Rtc::steal() };
+            rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
+            Self::sync(&rtc);
+        }
+
+        fn on_interrupt() {
+            // TODO: We will eventually need period/overflow stuff handled here
+            let rtc = unsafe { pac::Rtc::steal() };
+
+            static mut count: u32 = 0;
+
+            unsafe {
+                count += 1;
+
+                // After 750 ms
+                /* if count > 1 {
+                    if Self::count(&rtc) < 100 {
+                        panic!();
+                    }
+                } */
+            }
         }
 
         fn set_compare(instant: Self::Ticks) {
+            let rtc = unsafe { pac::Rtc::steal() };
+            unsafe { rtc.mode0().comp(0).write(|w| w.comp().bits(instant)) };
+            Self::sync(&rtc);
+
+            static mut count: u32 = 0;
+
             unsafe {
-                pac::Rtc::steal().mode0()
-                            .comp(0)
-                            //.write(|w| w.comp().bits(instant))
-                            .write(|w| w.comp().bits(32768))
+                count += 1;
+
+                // Happening at the start, why is this getting called twice,
+                // first for 1 sec and then for 750 ms, wtf, not
+                // how the queue is supposed to work.
+                /* if count == 1 {
+                    if instant > 100 {
+                        panic!();
+                    }
+                } */
+                /* if count == 2 {
+                    if instant < 1000 {
+                        panic!();
+                    }
+                } */
+
+                // After 750 ms
+                /* if count > 2 {
+                    panic!();
+                } */
             }
         }
 
         fn clear_compare_flag() {
-            unsafe {
-                pac::Rtc::steal()
-                    .mode0()
-                    .intflag()
-                    .write(|w| w.cmp0().set_bit());
-            }
+            let rtc = unsafe { pac::Rtc::steal() };
+            rtc.mode0().intflag().modify(|_, w| w.cmp0().set_bit());
         }
 
         fn pend_interrupt() {
             pac::NVIC::pend(pac::Interrupt::RTC);
+
+            static mut count: u32 = 0;
+
+            unsafe {
+                count += 1;
+
+                if count > 2 {
+                    panic!();
+                }
+            }
         }
 
         fn timer_queue() -> &'static TimerQueue<Self> {
