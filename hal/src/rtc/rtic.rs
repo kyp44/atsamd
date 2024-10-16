@@ -322,8 +322,10 @@ mod v2 {
             let rtc = unsafe { pac::Rtc::steal() };
 
             // Evidently the compare interrupt will not trigger if the instant is within a
-            // couple of ticks, so delay it a bit if it is too close
-            if instant.saturating_sub(Self::now()) < 3 {
+            // couple of ticks, so delay it a bit if it is too close.
+            // This is not mentioned in the documentation or errata, but is known to be an
+            // issue for other microcontrollers as well (e.g. nRF family).
+            if instant.saturating_sub(Self::now()) < 5 {
                 instant = instant.wrapping_add(5)
             }
 
