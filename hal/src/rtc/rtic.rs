@@ -95,13 +95,15 @@ mod v2 {
             unsafe extern "C" fn $interrupt_rtc() {
                 use $crate::rtic_time::timer_queue::TimerQueueBackend;
 
-                // TODO: We will eventually need period/overflow stuff handled here
                 let rtc = unsafe { $crate::pac::Rtc::steal() };
 
                 // For some strange reason that was unable to be determined, often the compare
                 // interrupt will trigger, but the count will be less than the compare value,
                 // even after syncing, which causes the TimerQueue to not register that the
-                // timeout is up. Testing showed that usually the count is only one less than
+                // timeout is up. There is nothing about this in the chip errata or
+                // documentation.
+                //
+                // Testing showed that usually the count is only one less than
                 // the compare. We correct for this here by waiting until the counter reaches
                 // the compare value.
                 if rtc.mode0().intflag().read().cmp0().bit_is_set() {
@@ -207,26 +209,6 @@ mod v2 {
             while rtc.mode2().status().read().syncbusy().bit_is_set() {}
         }
 
-        #[inline]
-        #[hal_macro_helper]
-        fn count(rtc: &pac::Rtc) -> u32 {
-            #[hal_cfg(any("rtc-d11", "rtc-d21"))]
-            {
-                rtc.mode0().readreq().modify(|_, w| w.rcont().set_bit());
-            }
-            #[hal_cfg("rtc-d5x")]
-            {
-                // Read the register once to trigger the sync
-                // NOTE: The count may behind, which can cause problems for determining if a
-                // timeout is up.
-                rtc.mode0().count().read().bits();
-            }
-
-            // Wait for the sync to complete then read the register
-            Self::sync(rtc);
-            rtc.mode0().count().read().bits()
-        }
-
         /// Starts the clock.
         ///
         /// **Do not use this function directly.**
@@ -266,15 +248,32 @@ mod v2 {
             // Enable the compare interrupt.
             rtc.mode0().intenset().write(|w| w.cmp0().set_bit());
 
+            // Start the RTC counter.
+            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
+            Self::sync(&rtc);
+
             // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
             #[hal_cfg("rtc-d5x")]
             {
                 rtc.mode0().ctrla().modify(|_, w| w.countsync().set_bit());
+
+                // Errata: The first read of the count is incorrect so we need to read it then
+                // wait for it to change.
+                let count = Self::now();
+                while Self::now() == count {}
             }
 
-            // Start the RTC counter.
-            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
+            // TODO: TEST CODE that checks whether setting an compare value lower than the
+            // count will trigger an interrupt (does not).
+            /* while Self::count(&rtc) < 2048 {}
+
+            unsafe {
+                rtc.mode0().comp(0).write(|w| w.comp().bits(2000));
+            }
             Self::sync(&rtc);
+
+            while rtc.mode0().intflag().read().cmp0().bit_is_clear() {}
+            panic!(); */
 
             // Enable the RTC interrupt in the NVIC and set its priority.
             // TODO: If we keep this in the HAL is there a different way to do
@@ -290,8 +289,17 @@ mod v2 {
     impl TimerQueueBackend for RtcBackend {
         type Ticks = u32;
 
+        #[hal_macro_helper]
         fn now() -> Self::Ticks {
-            Self::count(unsafe { &pac::Rtc::steal() })
+            let rtc = unsafe { &pac::Rtc::steal() };
+
+            #[hal_cfg(any("rtc-d11", "rtc-d21"))]
+            {
+                rtc.mode0().readreq().modify(|_, w| w.rcont().set_bit());
+                Self::sync(rtc);
+            }
+            // NOTE: Sync is automatic on SAMD5x chips.
+            rtc.mode0().count().read().bits()
         }
 
         fn enable_timer() {
@@ -307,11 +315,18 @@ mod v2 {
         }
 
         fn on_interrupt() {
-            // TODO: will eventaully need something here
+            // TODO: We will eventually need period/overflow stuff handled here
         }
 
-        fn set_compare(instant: Self::Ticks) {
+        fn set_compare(mut instant: Self::Ticks) {
             let rtc = unsafe { pac::Rtc::steal() };
+
+            // Evidently the compare interrupt will not trigger if the instant is within a
+            // couple of ticks, so delay it a bit if it is too close
+            if instant.saturating_sub(Self::now()) < 3 {
+                instant = instant.wrapping_add(5)
+            }
+
             unsafe { rtc.mode0().comp(0).write(|w| w.comp().bits(instant)) };
             Self::sync(&rtc);
         }
