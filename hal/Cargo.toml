@@ -56,10 +56,12 @@ void = {version = "1.0", default-features = false}
 # Optional depdendencies
 #===============================================================================
 
+critical-section = {version = "1.2.0", optional = true}
 defmt = {version = "0.3.4", optional = true}
 embedded-sdmmc = {version = "0.3", optional = true}
 jlink_rtt = {version = "0.2", optional = true}
 mcan-core = {version = "0.2", optional = true}
+portable-atomic = {version = "1.9.0", optional = true}
 rtic-monotonic = {version = "1.0", optional = true}
 rtic-time = {version = "2.0", optional = true}
 usb-device = {version = "0.3.1", optional = true}
@@ -180,7 +182,7 @@ defmt = ["dep:defmt"]
 dma = []
 enable_unsafe_aes_newblock_cipher = []
 max-channels = ["dma"]
-rtic = ["rtic-monotonic", "rtic-time"]
+rtic = ["rtic-monotonic", "rtic-time", "critical-section", "portable-atomic"]
 sdmmc = ["embedded-sdmmc"]
 usb = ["usb-device"]
 use_rtt = ["jlink_rtt"]

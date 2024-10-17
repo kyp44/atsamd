@@ -31,7 +31,6 @@
 //! }
 //! ```
 
-use super::{Count32Mode, Rtc};
 use atsamd_hal_macros::hal_macro_helper;
 
 pub use v2::*;
@@ -41,6 +40,7 @@ pub const CLOCK_FREQ: u32 = 32_768;
 
 mod v1 {
     use super::*;
+    use crate::rtc::{Count32Mode, Rtc};
     use rtic_monotonic::Monotonic;
 
     type Instant = fugit::Instant<u32, 1, CLOCK_FREQ>;
@@ -78,13 +78,15 @@ mod v1 {
 }
 
 mod v2 {
-    use core::u32;
-
     use super::*;
     use crate::{pac, timer_traits::InterruptDrivenTimer};
     use atsamd51j::rtc::mode0;
     use fugit::HertzU32;
-    use rtic_time::timer_queue::{TimerQueue, TimerQueueBackend};
+    use portable_atomic::{AtomicU64, Ordering};
+    use rtic_time::{
+        half_period_counter::calculate_now,
+        timer_queue::{TimerQueue, TimerQueueBackend},
+    };
 
     #[doc(hidden)]
     #[macro_export]
@@ -173,7 +175,7 @@ mod v2 {
         };
     }
 
-    /// Create an RTC based monotonic for RTIC and register the RTC interrupt
+    /// Create an RTC based monotonic for RTIC v2 and register the RTC interrupt
     /// for it.
     ///
     /// See the [`rtc`](crate::rtc) module for more details.
@@ -184,12 +186,12 @@ mod v2 {
         };
     }
 
-    struct TimerValueU32(u32);
-    impl rtic_time::half_period_counter::TimerValue for TimerValueU32 {
-        const BITS: u32 = 32;
+    struct TimerValueU16(u16);
+    impl rtic_time::half_period_counter::TimerValue for TimerValueU16 {
+        const BITS: u32 = 16;
     }
-    impl From<TimerValueU32> for u64 {
-        fn from(value: TimerValueU32) -> Self {
+    impl From<TimerValueU16> for u64 {
+        fn from(value: TimerValueU16) -> Self {
             Self::from(value.0)
         }
     }
@@ -197,6 +199,7 @@ mod v2 {
     /// RTC based [`TimerQueueBackend`].
     pub struct RtcBackend;
 
+    static RTC_OVERFLOW: AtomicU64 = AtomicU64::new(0);
     static RTC_TQ: TimerQueue<RtcBackend> = TimerQueue::new();
 
     #[hal_macro_helper]
@@ -223,10 +226,6 @@ mod v2 {
             rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
             Self::sync(&rtc);
 
-            // Initialize the timer queue
-            // TODO: When should we actually do this?
-            RTC_TQ.initialize(Self {});
-
             // Reset RTC back to initial settings, which disables it and enters mode 0.
             rtc.mode0().ctrla().modify(|_, w| w.swrst().set_bit());
             // Wait for the reset to complete
@@ -237,57 +236,71 @@ mod v2 {
             osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp1k());
             //osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp32k());
 
-            // Set the compare for a long time in the future.
-            // NOTE: Setting it to zero would immediately trigger an interrupt on the next
-            // tick. TODO: Will eventually need half periods
+            // Set mode 1 (16 bit counter)
+            rtc.mode0().ctrla().modify(|_, w| w.mode().count16());
+
+            // Configure the compare registers
             unsafe {
-                rtc.mode0().comp(0).write(|w| w.comp().bits(u32::MAX));
+                rtc.mode1().comp(0).write(|w| w.bits(0)); // Dynamic wakeup
+                rtc.mode1().comp(1).write(|w| w.bits(0x8000)); // Half-period
             }
             Self::sync(&rtc);
 
-            // Enable the compare interrupt.
-            rtc.mode0().intenset().write(|w| w.cmp0().set_bit());
+            // Timing critical, make sure we don't get interrupted.
+            critical_section::with(|_| {
+                // Start the RTC counter.
+                rtc.mode1().ctrla().modify(|_, w| w.enable().set_bit());
+                Self::sync(&rtc);
 
-            // Start the RTC counter.
-            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
-            Self::sync(&rtc);
+                // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
+                #[hal_cfg("rtc-d5x")]
+                {
+                    rtc.mode1().ctrla().modify(|_, w| w.countsync().set_bit());
 
-            // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
-            #[hal_cfg("rtc-d5x")]
-            {
-                rtc.mode0().ctrla().modify(|_, w| w.countsync().set_bit());
+                    // Errata: The first read of the count is incorrect so we need to read it then
+                    // wait for it to change.
+                    let count = Self::now();
+                    while Self::now() == count {}
+                }
 
-                // Errata: The first read of the count is incorrect so we need to read it then
-                // wait for it to change.
-                let count = Self::now();
-                while Self::now() == count {}
-            }
+                // Make sure overflow counter is synced with the timer value
+                RTC_OVERFLOW.store(0, Ordering::SeqCst);
 
-            // TODO: TEST CODE that checks whether setting an compare value lower than the
-            // count will trigger an interrupt (does not).
+                // Initialize the timer queue
+                RTC_TQ.initialize(Self {});
+
+                // Enable the compare and overflow interrupts.
+                rtc.mode1()
+                    .intenset()
+                    .write(|w| w.ovf().set_bit().cmp0().set_bit().cmp1().set_bit());
+
+                // Enable the RTC interrupt in the NVIC and set its priority.
+                // SAFETY: We take full ownership of the peripheral and interrupt vector,
+                // plus we are not using any external shared resources so we won't impact
+                // basepri/source masking based critical sections.
+                unsafe {
+                    set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
+                    pac::NVIC::unmask(pac::Interrupt::RTC);
+                }
+            });
+
+            // TODO: TEST CODE that checks whether setting an compare value
+            // lower than the count will trigger an interrupt (does
+            // not).
             /* while Self::count(&rtc) < 2048 {}
 
             unsafe {
-                rtc.mode0().comp(0).write(|w| w.comp().bits(2000));
+                rtc.mode1().comp(0).write(|w| w.comp().bits(2000));
             }
             Self::sync(&rtc);
 
-            while rtc.mode0().intflag().read().cmp0().bit_is_clear() {}
+            while rtc.mode1().intflag().read().cmp0().bit_is_clear() {}
             panic!(); */
-
-            // Enable the RTC interrupt in the NVIC and set its priority.
-            // TODO: If we keep this in the HAL is there a different way to do
-            // it that does not involve copying the
-            // `set_monotonic_prio` from `rtic-monotonics`?
-            unsafe {
-                set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
-                pac::NVIC::unmask(pac::Interrupt::RTC);
-            }
         }
     }
 
     impl TimerQueueBackend for RtcBackend {
-        type Ticks = u32;
+        type Ticks = u64;
 
         #[hal_macro_helper]
         fn now() -> Self::Ticks {
@@ -295,22 +308,26 @@ mod v2 {
 
             #[hal_cfg(any("rtc-d11", "rtc-d21"))]
             {
-                rtc.mode0().readreq().modify(|_, w| w.rcont().set_bit());
+                rtc.mode1().readreq().modify(|_, w| w.rcont().set_bit());
                 Self::sync(rtc);
             }
             // NOTE: Sync is automatic on SAMD5x chips.
-            rtc.mode0().count().read().bits()
+
+            calculate_now(
+                || RTC_OVERFLOW.load(Ordering::Relaxed),
+                || TimerValueU16(rtc.mode1().count().read().bits()),
+            )
         }
 
         fn enable_timer() {
             let rtc = unsafe { pac::Rtc::steal() };
-            rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
+            rtc.mode1().ctrla().modify(|_, w| w.enable().set_bit());
             Self::sync(&rtc);
         }
 
         fn disable_timer() {
             let rtc = unsafe { pac::Rtc::steal() };
-            rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
+            rtc.mode1().ctrla().modify(|_, w| w.enable().clear_bit());
             Self::sync(&rtc);
         }
 
@@ -329,13 +346,13 @@ mod v2 {
                 instant = instant.wrapping_add(5)
             }
 
-            unsafe { rtc.mode0().comp(0).write(|w| w.comp().bits(instant)) };
+            unsafe { rtc.mode1().comp(0).write(|w| w.comp().bits(instant)) };
             Self::sync(&rtc);
         }
 
         fn clear_compare_flag() {
             let rtc = unsafe { pac::Rtc::steal() };
-            rtc.mode0().intflag().modify(|_, w| w.cmp0().set_bit());
+            rtc.mode1().intflag().modify(|_, w| w.cmp0().set_bit());
             // NOTE: Should not need to sync here
         }
 
@@ -348,14 +365,14 @@ mod v2 {
         }
     }
 
-    const fn cortex_logical2hw(logical: u8, nvic_prio_bits: u8) -> u8 {
-        ((1 << nvic_prio_bits) - logical) << (8 - nvic_prio_bits)
-    }
-
     unsafe fn set_monotonic_prio(
         prio_bits: u8,
         interrupt: impl cortex_m::interrupt::InterruptNumber,
     ) {
+        const fn cortex_logical2hw(logical: u8, nvic_prio_bits: u8) -> u8 {
+            ((1 << nvic_prio_bits) - logical) << (8 - nvic_prio_bits)
+        }
+
         extern "C" {
             static RTIC_ASYNC_MAX_LOGICAL_PRIO: u8;
         }
