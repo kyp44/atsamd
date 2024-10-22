@@ -13,7 +13,13 @@ pub use crate::ehal_02::digital::v2::ToggleableOutputPin as _atsamd_hal_embedded
 pub use crate::ehal_02::prelude::*;
 
 #[cfg(feature = "rtic")]
-pub use crate::rtc_monotonic;
+pub use crate::rtc_monotonic_1k_ext;
+#[cfg(feature = "rtic")]
+pub use crate::rtc_monotonic_1k_int;
+#[cfg(feature = "rtic")]
+pub use crate::rtc_monotonic_32k_ext;
+#[cfg(feature = "rtic")]
+pub use crate::rtc_monotonic_32k_int;
 
 #[cfg(feature = "rtic")]
 pub use rtic_time::Monotonic;

@@ -35,13 +35,12 @@ use atsamd_hal_macros::hal_macro_helper;
 
 pub use v2::*;
 
-/// The RTC clock frequency in Hz.
-pub const CLOCK_FREQ: u32 = 32_768;
-
 mod v1 {
-    use super::*;
     use crate::rtc::{Count32Mode, Rtc};
     use rtic_monotonic::Monotonic;
+
+    /// The RTC clock frequency in Hz.
+    pub const CLOCK_FREQ: u32 = 32_768;
 
     type Instant = fugit::Instant<u32, 1, CLOCK_FREQ>;
     type Duration = fugit::Duration<u32, 1, CLOCK_FREQ>;
@@ -79,9 +78,7 @@ mod v1 {
 
 mod v2 {
     use super::*;
-    use crate::{pac, timer_traits::InterruptDrivenTimer};
-    use atsamd51j::rtc::mode0;
-    use fugit::HertzU32;
+    use crate::pac;
     use portable_atomic::{AtomicU64, Ordering};
     use rtic_time::{
         half_period_counter::calculate_now,
@@ -91,10 +88,10 @@ mod v2 {
     #[doc(hidden)]
     #[macro_export]
     macro_rules! __internal_create_rtc_interrupt {
-        ($mono_backend:ident, $interrupt_rtc:ident) => {
+        () => {
             #[no_mangle]
             #[allow(non_snake_case)]
-            unsafe extern "C" fn $interrupt_rtc() {
+            unsafe extern "C" fn RTC() {
                 use $crate::rtic_time::timer_queue::TimerQueueBackend;
 
                 let rtc = unsafe { $crate::pac::Rtc::steal() };
@@ -108,10 +105,10 @@ mod v2 {
                 // Testing showed that usually the count is only one less than
                 // the compare. We correct for this here by waiting until the counter reaches
                 // the compare value.
-                if rtc.mode0().intflag().read().cmp0().bit_is_set() {
-                    let compare = rtc.mode0().comp(0).read().bits();
+                if rtc.mode1().intflag().read().cmp0().bit_is_set() {
+                    let compare = $crate::rtc::rtic::RtcBackend::set_instant();
                     loop {
-                        let counter = $crate::rtc::rtic::$mono_backend::now();
+                        let counter = $crate::rtc::rtic::RtcBackend::now();
 
                         if counter >= compare {
                             break;
@@ -119,7 +116,7 @@ mod v2 {
                     }
                 }
 
-                $crate::rtc::rtic::$mono_backend::timer_queue().on_monotonic_interrupt();
+                $crate::rtc::rtic::RtcBackend::timer_queue().on_monotonic_interrupt();
             }
         };
     }
@@ -127,7 +124,7 @@ mod v2 {
     #[doc(hidden)]
     #[macro_export]
     macro_rules! __internal_create_rtc_struct {
-        ($name:ident, $mono_backend:ident, $pac_rtc:ty, $interrupt_rtc:ident) => {
+        ($name:ident, $clock_rate:literal, $clock_source:ident) => {
             /// A `Monotonic` based on the RTC peripheral.
             pub struct $name;
 
@@ -136,38 +133,33 @@ mod v2 {
                 ///
                 /// This method must be called only once.
                 pub fn start(
-                    rtc: $pac_rtc,
+                    rtc: $crate::pac::Rtc,
                     mclk: &mut $crate::pac::Mclk,
                     osc32kctrl: &mut $crate::pac::Osc32kctrl,
                 ) {
-                    $crate::__internal_create_rtc_interrupt!($mono_backend, $interrupt_rtc);
+                    $crate::__internal_create_rtc_interrupt!();
 
-                    $crate::rtc::rtic::$mono_backend::_start(rtc, mclk, osc32kctrl);
+                    $crate::rtc::rtic::RtcBackend::_start(
+                        rtc,
+                        mclk,
+                        osc32kctrl,
+                        $crate::rtc::rtic::ClockSource::$clock_source,
+                    );
                 }
             }
 
             impl $crate::rtic_time::monotonic::TimerQueueBasedMonotonic for $name {
-                type Backend = $crate::rtc::rtic::$mono_backend;
+                type Backend = $crate::rtc::rtic::RtcBackend;
                 type Instant = $crate::fugit::Instant<
                     <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                     1,
-                    1_024,
+                    $clock_rate,
                 >;
                 type Duration = $crate::fugit::Duration<
                     <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                     1,
-                    1_024,
+                    $clock_rate,
                 >;
-                /* type Instant = $crate::fugit::Instant<
-                    <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
-                    1,
-                    32_768,
-                >;
-                type Duration = $crate::fugit::Duration<
-                    <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
-                    1,
-                    32_768,
-                >; */
             }
 
             $crate::rtic_time::impl_embedded_hal_delay_fugit!($name);
@@ -176,14 +168,54 @@ mod v2 {
     }
 
     /// Create an RTC based monotonic for RTIC v2 and register the RTC interrupt
-    /// for it.
+    /// for it with a 1.024 kHz internal clock.
     ///
     /// See the [`rtc`](crate::rtc) module for more details.
     #[macro_export]
-    macro_rules! rtc_monotonic {
+    macro_rules! rtc_monotonic_1k_int {
         ($name:ident) => {
-            $crate::__internal_create_rtc_struct!($name, RtcBackend, $crate::pac::Rtc, RTC);
+            $crate::__internal_create_rtc_struct!($name, 1_024, Int1k);
         };
+    }
+
+    /// Create an RTC based monotonic for RTIC v2 and register the RTC interrupt
+    /// for it with a 1.024 kHz external clock.
+    ///
+    /// See the [`rtc`](crate::rtc) module for more details.
+    #[macro_export]
+    macro_rules! rtc_monotonic_1k_ext {
+        ($name:ident) => {
+            $crate::__internal_create_rtc_struct!($name, 1_024, Ext1k);
+        };
+    }
+
+    /// Create an RTC based monotonic for RTIC v2 and register the RTC interrupt
+    /// for it with a 32.768 kHz internal clock.
+    ///
+    /// See the [`rtc`](crate::rtc) module for more details.
+    #[macro_export]
+    macro_rules! rtc_monotonic_32k_int {
+        ($name:ident) => {
+            $crate::__internal_create_rtc_struct!($name, 32_768, Int32k);
+        };
+    }
+
+    /// Create an RTC based monotonic for RTIC v2 and register the RTC interrupt
+    /// for it with a 32.768 kHz external clock.
+    ///
+    /// See the [`rtc`](crate::rtc) module for more details.
+    #[macro_export]
+    macro_rules! rtc_monotonic_32k_ext {
+        ($name:ident) => {
+            $crate::__internal_create_rtc_struct!($name, 32_768, Ext32k);
+        };
+    }
+
+    pub enum ClockSource {
+        Int1k,
+        Ext1k,
+        Int32k,
+        Ext32k,
     }
 
     struct TimerValueU16(u16);
@@ -199,17 +231,38 @@ mod v2 {
     /// RTC based [`TimerQueueBackend`].
     pub struct RtcBackend;
 
+    static RTC_SET_INSTANT: AtomicU64 = AtomicU64::new(0);
     static RTC_OVERFLOW: AtomicU64 = AtomicU64::new(0);
     static RTC_TQ: TimerQueue<RtcBackend> = TimerQueue::new();
 
     #[hal_macro_helper]
     impl RtcBackend {
         #[inline]
-        fn sync(rtc: &pac::Rtc) {
+        fn sync() {
+            let rtc = unsafe { &pac::Rtc::steal() };
+
             #[hal_cfg("rtc-d5x")]
-            while rtc.mode2().syncbusy().read().bits() != 0 {}
+            while rtc.mode1().syncbusy().read().bits() != 0 {}
             #[hal_cfg(any("rtc-d11", "rtc-d21"))]
-            while rtc.mode2().status().read().syncbusy().bit_is_set() {}
+            while rtc.mode1().status().read().syncbusy().bit_is_set() {}
+        }
+
+        #[inline]
+        pub fn set_instant() -> <Self as TimerQueueBackend>::Ticks {
+            RTC_SET_INSTANT.load(Ordering::Relaxed)
+        }
+
+        fn raw_count() -> u16 {
+            let rtc = unsafe { &pac::Rtc::steal() };
+
+            #[hal_cfg(any("rtc-d11", "rtc-d21"))]
+            {
+                rtc.mode1().readreq().modify(|_, w| w.rcont().set_bit());
+                Self::sync();
+            }
+            // NOTE: Sync is automatic on SAMD5x chips.
+
+            rtc.mode1().count().read().bits()
         }
 
         /// Starts the clock.
@@ -217,14 +270,19 @@ mod v2 {
         /// **Do not use this function directly.**
         ///
         /// Use the [`rtc_monotonic`] macro instead.
-        pub fn _start(rtc: pac::Rtc, mclk: &mut pac::Mclk, osc32kctrl: &mut pac::Osc32kctrl) {
+        pub fn _start(
+            rtc: pac::Rtc,
+            mclk: &mut pac::Mclk,
+            osc32kctrl: &mut pac::Osc32kctrl,
+            clock_source: ClockSource,
+        ) {
             // Enables the APBA clock for the RTC.
             mclk.apbamask().modify(|_, w| w.rtc_().set_bit());
 
             // It is necessary to disable the RTC before resetting it.
             // NOTE: This register and field are the same in all modes.
             rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
-            Self::sync(&rtc);
+            Self::sync();
 
             // Reset RTC back to initial settings, which disables it and enters mode 0.
             rtc.mode0().ctrla().modify(|_, w| w.swrst().set_bit());
@@ -232,36 +290,46 @@ mod v2 {
             while rtc.mode0().ctrla().read().swrst().bit_is_set() {}
 
             // Set the RTC clock source.
-            // TODO: How to we set this generically so that the user can choose?
-            osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp1k());
-            //osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp32k());
+            match clock_source {
+                ClockSource::Int1k => osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp1k()),
+                ClockSource::Ext1k => osc32kctrl.rtcctrl().write(|w| w.rtcsel().xosc1k()),
+                ClockSource::Int32k => osc32kctrl.rtcctrl().write(|w| w.rtcsel().ulp32k()),
+                ClockSource::Ext32k => osc32kctrl.rtcctrl().write(|w| w.rtcsel().xosc32k()),
+            }
 
             // Set mode 1 (16 bit counter)
             rtc.mode0().ctrla().modify(|_, w| w.mode().count16());
+
+            // Set the mode 1 period
+            unsafe { rtc.mode1().per().write(|w| w.bits(0xFFFF)) };
 
             // Configure the compare registers
             unsafe {
                 rtc.mode1().comp(0).write(|w| w.bits(0)); // Dynamic wakeup
                 rtc.mode1().comp(1).write(|w| w.bits(0x8000)); // Half-period
             }
-            Self::sync(&rtc);
+            Self::sync();
 
             // Timing critical, make sure we don't get interrupted.
             critical_section::with(|_| {
                 // Start the RTC counter.
                 rtc.mode1().ctrla().modify(|_, w| w.enable().set_bit());
-                Self::sync(&rtc);
+                Self::sync();
 
                 // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
                 #[hal_cfg("rtc-d5x")]
                 {
                     rtc.mode1().ctrla().modify(|_, w| w.countsync().set_bit());
+                    Self::sync();
 
                     // Errata: The first read of the count is incorrect so we need to read it then
                     // wait for it to change.
-                    let count = Self::now();
-                    while Self::now() == count {}
+                    let count = Self::raw_count();
+                    while Self::raw_count() == count {}
                 }
+
+                // Set current instant
+                RTC_SET_INSTANT.store(0, Ordering::SeqCst);
 
                 // Make sure overflow counter is synced with the timer value
                 RTC_OVERFLOW.store(0, Ordering::SeqCst);
@@ -283,19 +351,6 @@ mod v2 {
                     pac::NVIC::unmask(pac::Interrupt::RTC);
                 }
             });
-
-            // TODO: TEST CODE that checks whether setting an compare value
-            // lower than the count will trigger an interrupt (does
-            // not).
-            /* while Self::count(&rtc) < 2048 {}
-
-            unsafe {
-                rtc.mode1().comp(0).write(|w| w.comp().bits(2000));
-            }
-            Self::sync(&rtc);
-
-            while rtc.mode1().intflag().read().cmp0().bit_is_clear() {}
-            panic!(); */
         }
     }
 
@@ -304,50 +359,73 @@ mod v2 {
 
         #[hal_macro_helper]
         fn now() -> Self::Ticks {
-            let rtc = unsafe { &pac::Rtc::steal() };
-
-            #[hal_cfg(any("rtc-d11", "rtc-d21"))]
-            {
-                rtc.mode1().readreq().modify(|_, w| w.rcont().set_bit());
-                Self::sync(rtc);
-            }
-            // NOTE: Sync is automatic on SAMD5x chips.
-
             calculate_now(
                 || RTC_OVERFLOW.load(Ordering::Relaxed),
-                || TimerValueU16(rtc.mode1().count().read().bits()),
+                || TimerValueU16(Self::raw_count()),
             )
         }
 
         fn enable_timer() {
             let rtc = unsafe { pac::Rtc::steal() };
             rtc.mode1().ctrla().modify(|_, w| w.enable().set_bit());
-            Self::sync(&rtc);
+            Self::sync();
         }
 
         fn disable_timer() {
             let rtc = unsafe { pac::Rtc::steal() };
             rtc.mode1().ctrla().modify(|_, w| w.enable().clear_bit());
-            Self::sync(&rtc);
+            Self::sync();
         }
 
         fn on_interrupt() {
-            // TODO: We will eventually need period/overflow stuff handled here
+            let rtc = unsafe { pac::Rtc::steal() };
+            if rtc.mode1().intflag().read().ovf().bit_is_set() {
+                // This was an overflow interrupt
+                rtc.mode1().intflag().modify(|_, w| w.ovf().set_bit());
+                let prev = RTC_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+                assert!(prev % 2 == 1, "Monotonic must have skipped an interrupt!");
+            }
+            if rtc.mode1().intflag().read().cmp1().bit_is_set() {
+                // This was half-period interrupt
+                rtc.mode1().intflag().modify(|_, w| w.cmp1().set_bit());
+                let prev = RTC_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+                assert!(prev % 2 == 0, "Monotonic must have skipped an interrupt!");
+            }
         }
 
         fn set_compare(mut instant: Self::Ticks) {
             let rtc = unsafe { pac::Rtc::steal() };
 
-            // Evidently the compare interrupt will not trigger if the instant is within a
-            // couple of ticks, so delay it a bit if it is too close.
-            // This is not mentioned in the documentation or errata, but is known to be an
-            // issue for other microcontrollers as well (e.g. nRF family).
-            if instant.saturating_sub(Self::now()) < 5 {
-                instant = instant.wrapping_add(5)
-            }
+            const MAX: u64 = 0xFFFF;
 
-            unsafe { rtc.mode1().comp(0).write(|w| w.comp().bits(instant)) };
-            Self::sync(&rtc);
+            // Disable interrupts because this section is timing critical.
+            // We rely on the fact that this entire section runs within one
+            // RTC clock tick. (which it will do easily if it doesn't get
+            // interrupted)
+            critical_section::with(|_| {
+                let now = Self::now();
+                // wrapping_sub deals with the u64 overflow corner case
+                let diff = instant.wrapping_sub(now);
+                let val = if diff <= MAX {
+                    // Now we know `instant` will happen within one `MAX` time duration.
+
+                    // Evidently the compare interrupt will not trigger if the instant is within a
+                    // couple of ticks, so delay it a bit if it is too close.
+                    // This is not mentioned in the documentation or errata, but is known to be an
+                    // issue for other microcontrollers as well (e.g. nRF family).
+                    if diff < 5 {
+                        instant = instant.wrapping_add(5)
+                    }
+
+                    (instant & MAX) as u16
+                } else {
+                    0
+                };
+
+                RTC_SET_INSTANT.store(instant, Ordering::SeqCst);
+                unsafe { rtc.mode1().comp(0).write(|w| w.comp().bits(val)) };
+                Self::sync();
+            });
         }
 
         fn clear_compare_flag() {
