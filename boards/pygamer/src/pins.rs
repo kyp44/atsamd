@@ -2,8 +2,10 @@
 
 use super::{hal, pac};
 
+use embedded_hal_bus::spi::NoDelay;
 use hal::prelude::*;
 
+use embedded_hal_bus::spi::ExclusiveDevice;
 use hal::clock::GenericClockController;
 use hal::gpio::PA01;
 use hal::pwm;
@@ -582,7 +584,13 @@ pub struct Display {
 }
 
 pub type TftPads = spi::Pads<Sercom4, IoSet1, NoneT, TftMosi, TftSclk>;
-pub type TftSpi = spi::Spi<spi::Config<TftPads>, spi::Tx>;
+pub type TftSpi = spi::Spi<spi::Config<TftPads>, spi::Duplex>;
+
+type Ugh = ExclusiveDevice<
+    Spi<Config<Pads<Sercom4, IoSet1, NoneT, Pin<PB15, Alternate<C>>, Pin<PB13, Alternate<C>>>>, Tx>,
+    Pin<PB12, Output<PushPull>>,
+    NoDelay,
+>;
 
 impl Display {
     /// Convenience for setting up the on board display.
@@ -593,17 +601,30 @@ impl Display {
         mclk: &mut pac::Mclk,
         timer2: pac::Tc2,
         delay: &mut hal::delay::Delay,
-    ) -> Result<(ST7735<TftSpi, TftDc, TftReset>, Pwm2<PA01>), ()> {
+    ) -> Result<
+        (
+            ST7735<ExclusiveDevice<TftSpi, TftCs, NoDelay>, TftDc, TftReset>,
+            Pwm2<PA01>,
+        ),
+        (),
+    > {
         let gclk0 = clocks.gclk0();
         let clock = &clocks.sercom4_core(&gclk0).ok_or(())?;
         let pads = spi::Pads::default()
             .sclk(self.tft_sclk)
             .data_out(self.tft_mosi);
-        let tft_spi = spi::Config::new(mclk, sercom4, pads, clock.freq())
-            .spi_mode(spi::MODE_0)
-            .baud(16.MHz())
-            .enable();
         let mut tft_cs: TftCs = self.tft_cs.into();
+        // TODO: This does not compile due to an issue with the new `embedded-hal`
+        // traits always assuming full duplex. See discussion here: https://matrix.to/#/!JbgTnIGpDxEHkjzSep:gitter.im/$0YCyC0Byn48TJr1zZ-tzQpA-WtsaB2nfnBnnx-kiKyg?via=gitter.im&via=matrix.org&via=matrix.sajattack.xyz
+        let tft_spi: () = ExclusiveDevice::new_no_delay(
+            spi::Config::new(mclk, sercom4, pads, clock.freq())
+                .spi_mode(spi::MODE_0)
+                .baud(16.MHz())
+                .enable(),
+            tft_cs,
+        )
+        .map_err(|_| ())?;
+
         tft_cs.set_low().ok();
         let mut display = st7735_lcd::ST7735::new(
             tft_spi,
