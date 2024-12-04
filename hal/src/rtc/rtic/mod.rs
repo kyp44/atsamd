@@ -62,6 +62,8 @@
 //! NOTE: The mode 1 monotonic currently has a robustness issue that is being
 //! worked on. Refer to [Issue #765](https://github.com/atsamd-rs/atsamd/issues/765) for details.
 //!
+//! TODO: Add note about sync delay and skipping ticks.
+//!
 //! # Example
 //!
 //! ```
