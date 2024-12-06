@@ -23,6 +23,8 @@
 //! supposed to count time _monotonically_). Doing so may result in strange
 //! behavior for tasks scheduled near the time of the rollover.
 //!
+//! TODO: Move this info to individual backends?
+//!
 //! The overall monotonic period (i.e. the time before the monotonic rolls over
 //! back to zero time) is as follows:
 //!
@@ -132,13 +134,11 @@ mod v1 {
     }
 }
 
-mod mode0;
-mod mode1;
+mod backends;
+mod modes;
 
-pub use mode0::RtcBackend as RtcMode0Backend;
-pub use mode1::RtcBackend as RtcMode1Backend;
-
-const MIN_COMPARE_TICKS: u32 = 5;
+pub use modes::mode0::RtcBackend as RtcMode0Backend;
+pub use modes::mode1::RtcBackend as RtcMode1Backend;
 
 pub mod prelude {
     pub use super::rtc_clock;
@@ -159,7 +159,6 @@ pub mod prelude {
 /// [`clock::v2::rtcosc`](crate::clock::v2::rtcosc), but we want to avoid
 /// dependencies from other parts of the HAL since this will move to [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/).
 pub mod rtc_clock {
-    use crate::pac::{generic::W, osc32kctrl::rtcctrl::RtcctrlSpec};
     use core::marker::PhantomData;
 
     /// Type-level enum for available RTC clock rates.
@@ -179,6 +178,9 @@ pub mod rtc_clock {
         const RATE: u32 = 1_024;
     }
 
+    // TODO: We may remove these, see:
+    // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
+
     /// Type-level enum for available RTC sources.
     pub trait RtcClockSource {}
 
@@ -190,7 +192,7 @@ pub mod rtc_clock {
     pub enum ClockExternal {}
     impl RtcClockSource for ClockExternal {}
 
-    /// Types that can configure the RTC clock.
+    /* /// Types that can configure the RTC clock.
     pub trait RtcClockSetter {
         /// Sets the RTC clock source by modifying the register.
         fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec>;
@@ -226,7 +228,7 @@ pub mod rtc_clock {
         fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec> {
             reg.rtcsel().xosc32k()
         }
-    }
+    } */
 }
 
 #[doc(hidden)]
@@ -329,17 +331,4 @@ unsafe fn set_monotonic_prio(prio_bits: u8, interrupt: impl cortex_m::interrupt:
     let mut nvic: cortex_m::peripheral::NVIC = core::mem::transmute(());
 
     nvic.set_priority(interrupt, hw_prio);
-}
-
-// TODO: Test code
-#[derive(Default)]
-struct LoopChecker {
-    count: usize,
-}
-impl LoopChecker {
-    pub fn too_many(&mut self) -> bool {
-        self.count += 1;
-
-        self.count > 0x800000
-    }
 }
