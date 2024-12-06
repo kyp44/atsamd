@@ -79,6 +79,8 @@ macro_rules! __internal_basic_backend {
                 mclk: &mut pac::Mclk,
                 osc32kctrl: &mut pac::Osc32kctrl,
             ) { */
+            // TODO: Can these be combined for both backend? There is a lot of code
+            // duplication.
             pub fn _start(rtc: pac::Rtc) {
                 // Disable the RTC.
                 <$mode>::disable(&rtc);
@@ -229,6 +231,8 @@ macro_rules! __internal_half_period_counting_backend {
                 #[hal_cfg("rtc-d5x")] mclk: &mut pac::Mclk,
                 osc32kctrl: &mut pac::Osc32kctrl,
             ) { */
+            // TODO: Can these be combined for both backend? There is a lot of code
+            // duplication.
             pub fn _start(rtc: pac::Rtc) {
                 // Disable the RTC.
                 <$mode>::disable(&rtc);
