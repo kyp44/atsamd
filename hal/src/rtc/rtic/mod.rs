@@ -263,7 +263,7 @@ macro_rules! __internal_create_rtc_struct {
                 $crate::__internal_create_rtc_interrupt!($backend);
 
                 $crate::rtc::rtic::$backend::_start::<ClockSetter<$clock_rate, $clock_source>>(
-                    rtc, mclk, osc32kctrl,
+                    rtc, // TODO: Delete?, mclk, osc32kctrl,
                 );
             }
         }
