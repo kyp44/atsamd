@@ -1,11 +1,14 @@
-// NOTE: TODO: Move this elsewhere so it is not duplicated?
-// As explained in the datasheet, reading a read-synced register may result in
-// an old value, which we try to avoid by ensuring that SYNCBUSY is clear before
-// reading. A write to a write-synced register will be discarded if syncing is
-// happening during the write. As such we also ensure that SYNCBUSY is clear
-// before writing to a synced register. Every register access should be prefaced
-// by a SYNC comment indicating the required synchronization, which indicates
-// that this access was checked and accounted for.
+//! Abstraction of basic RTC functions for each mode.
+//!
+//! As explained in the [datasheets](https://onlinedocs.microchip.com/oxy/GUID-F5813793-E016-46F5-A9E2-718D8BCED496-en-US-14/GUID-ABE2D37F-8125-4279-9955-BC3900046CFF.html),
+//! reading a read-synced register may result in
+//! an old value, which we try to avoid by ensuring that SYNCBUSY is clear
+//! before reading. A write to a write-synced register will be discarded if
+//! syncing is happening during the write. As such, we also ensure that SYNCBUSY
+//! is clear before writing to a synced register. Every register access should
+//! be prefaced by a `SYNC`` comment indicating the required synchronization,
+//! the presence of this comment indicates that this access was checked and
+//! accounted for.
 
 use crate::pac;
 use atsamd_hal_macros::hal_macro_helper;
@@ -183,16 +186,12 @@ pub trait RtcMode {
     }
 
     /// Waits until the COUNT register changes.
+    ///
     /// Note that this may not necessarily be the next tick due sync delay.
+    /// Beware that this will wait forever if the RTC is disabled!
     #[inline]
     fn wait_for_count_change(rtc: &Rtc) -> Self::Count {
         let mut last_count = Self::count(rtc);
-
-        // If the clock is disabled then just continue since otherwise we would wait
-        // forever.
-        if !Self::is_enabled(rtc) {
-            return last_count;
-        }
 
         let mut loop_checker = LoopChecker::default();
         loop {
@@ -221,6 +220,7 @@ pub mod mode0 {
     #[hal_cfg("rtc-d5x")]
     create_rtc_interrupt!(mode0, Overflow, ovf);
 
+    /// The RTC operating in MODE0 (23-bit COUNT)
     pub struct RtcMode0;
 
     impl RtcMode for RtcMode0 {
@@ -333,6 +333,7 @@ pub mod mode1 {
     create_rtc_interrupt!(mode1, Compare1, cmp1);
     create_rtc_interrupt!(mode1, Overflow, ovf);
 
+    /// The RTC operating in MODE1 (16-bit COUNT)
     pub struct RtcMode1;
 
     impl RtcMode for RtcMode1 {

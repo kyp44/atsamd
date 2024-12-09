@@ -1,4 +1,4 @@
-//! [`Monotonic`](rtic_time::Monotonic) implementations for the Real Time
+//! [`Monotonic`](rtic_time::Monotonic) implementations using the Real Time
 //! Clock (RTC).
 //!
 //! Enabling the `rtic` feature is required to use this module.
@@ -7,31 +7,58 @@
 //! [`Rtc`](crate::rtc::Rtc) in [`Count32Mode`](crate::rtc::Count32Mode).
 //!
 //! The items here provide monotonics for RTIC v2. Two monotonics are provided:
-//! one that uses the RTC in mode 0, and another that uses the RTC in mode 1.
-//! The mode 0 monotonic uses a 32-bit hardware counter with no [half-period
-//! counting](rtic_time::half_period_counter), whereas the mode 1 monotonic uses
-//! a 16-bit counter but with half-period counting.
+//! one that uses the RTC in mode 0 (32-bit hardware counter), and another that
+//! uses the RTC in mode 1 (16-bit hardware counter).
 //!
-//! The mode 0 monotonic has the advantage that the only interrupts that occur
-//! are for the RTIC tasks, but the disadvantage is that the lack of half-period
-//! counting means that the monotonic wraps in a much shorter time than the mode
-//! 1 monotonic. The mode 1 monotonic, however is less efficient in the sense
-//! that additional interrupts are required for half-period counting, which can
-//! be quite frequent depending on the selected clock rate. The monotonic should
-//! be chosen based on the specific use case, bearing in mind that monotonics
-//! are never supposed to actually roll over back to zero time (i.e. they are
-//! supposed to count time _monotonically_). Doing so may result in strange
-//! behavior for tasks scheduled near the time of the rollover.
+//! Which mode is used can influence the total monotonic period before the its
+//! time counter overflows and rolls back to zero time. This rollover violates
+//! the contract of the monotonic, which is supposed to count time
+//! _monotonically_. As such, the rollover can cause strange behavior for tasks
+//! scheduled near the time of the rollover. Hence, the monotonic should be
+//! chosen to match the use case such that the monotonic will never roll over
+//! during the expected total duration of program execution.
 //!
-//! TODO: Move this info to individual backends?
+//! For all chip variants, the mode 1 monotonic uses [half-period
+//! counting](rtic_time::half_period_counter) to greatly extend the total
+//! monotonic period, which is due to the RTC for every variant having at least
+//! two compare registers in mode 1. However, in this mode, non-RTIC-task
+//! interrupts occur more frequently (see below), which are needed for
+//! half-period counting, so it is less efficient in that regard.
+//!
+//! For SAMD11/21 chips, the mode 0 monotonic only has a single compare register
+//! so that half-period counting is not possible. This significantly reduces the
+//! total monotonic period. The SAMx5x chips, however feature two compare
+//! registers in mode 0 so that half-period counting can be done. In either
+//! case, the mode 0 monotonic has extremely infrequent non-RTIC-task interrupts
+//! so is more efficient.
+//!
+//! NOTE: These monotonics currently live in the HAL for testing and refinement
+//! purposes. The intention is to eventually move them to the
+//! [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/) crate, which is a central location for peripheral-based
+//! RTIC monotonics for various microcontroller families. As such, be aware that
+//! this module could disappear at any time in the future.
+//!
+//! # Choosing a mode
 //!
 //! The overall monotonic period (i.e. the time before the monotonic rolls over
 //! back to zero time) is as follows:
 //!
-//! |            | 1 kHz clock        | 32 kHz clock        |
-//! | ---------- | ------------------ | ------------------- |
-//! | **Mode 0** | ~48 days           | ~36 hours           |
-//! | **Mode 1** | ~571 million years | ~17.8 million years |
+//! |                        | 1 kHz clock        | 32 kHz clock        |
+//! | ---------------------- | ------------------ | ------------------- |
+//! | **Mode 0 (SAMD11/21)** | ~48 days           | ~36 hours           |
+//! | **Mode 0 (SAMx5x)**    | ~571 million years | ~17.8 million years |
+//! | **Mode 1**             | ~571 million years | ~17.8 million years |
+//!
+//! The non-RTC-task interrupt periods for the monotonics are:
+//!
+//! **TODO: HERE TABLE BELOW NOT DONE**
+//!
+//! |                        | 1 kHz clock        | 32 kHz clock        |
+//! | ---------------------- | ------------------ | ------------------- |
+//! | **Mode 0 (SAMD11/21)** | Never            | Never           |
+//! | **Mode 0 (SAMx5x)**    | ~48 days           | ~36 hours           |
+//! | **Mode 1**             | ~571 million years | ~17.8 million years |
+//!
 //!
 //! The time precision (i.e. the RTC tick time and shortest delay time) is as
 //! follows:
@@ -39,6 +66,8 @@
 //! |              | 1 kHz clock | 32 kHz clock |
 //! | ------------ | ----------- | ------------ |
 //! | **Any mode** | ~977 μs     | ~31 μs       |
+//!
+//! # RTC clock selection
 //!
 //! A monotonic using the desired RTC mode should be created with the
 //! appropriate [macro](crate::rtc::rtic::prelude). The RTC clock rate and
@@ -50,19 +79,7 @@
 //! type clock source implementing
 //! [`RtcClockSource`](rtc_clock::RtcClockSource). See below for an example.
 //!
-//! NOTE: These monotonics currently live in the HAL for testing and refinement
-//! purposes. The intention is to eventually move them to the
-//! [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/) crate, which is a central location for peripheral-based
-//! RTIC monotonics for various microcontroller families. As such, be aware that
-//! this module could disappear at any time in the future.
 //!
-//! NOTE: Some SAMD chips will support half-period counting in mode 0, which
-//! would greatly extend the overall monotonic period to that of the mode 1
-//! monotonic, while also still being very interrupt-efficient. It is planned to
-//! add this to the mode 0 monotonic for chips that support it.
-//!
-//! NOTE: The mode 1 monotonic currently has a robustness issue that is being
-//! worked on. Refer to [Issue #765](https://github.com/atsamd-rs/atsamd/issues/765) for details.
 //!
 //! TODO: Add note about sync delay and skipping ticks.
 //!
@@ -90,6 +107,12 @@
 //!     }
 //! }
 //! ```
+
+// TODO: Put this info somewhere in the documentation:
+// - Default clock source is the internal 1k on the SAMD5x.
+// - There is no default on SAMD11/21, a generic clock must be configured
+// - Must ensure that the RTC clock mast is enabled in PM (SAMD11/21) or Mclk
+//   (SAMx5x), which it is already on reset.
 
 mod v1 {
     use crate::rtc::{Count32Mode, Rtc};
@@ -151,35 +174,33 @@ pub mod prelude {
 ///
 /// These types utilize [type-level programming](crate::typelevel)
 /// techniques and are passed to the [monotonic creation
-/// macros](crate::rtc::rtic::prelude)
-///
-/// NOTE: This could probably be accomplished using the items from
-/// [`clock::v2::rtcosc`](crate::clock::v2::rtcosc), but we want to avoid
-/// dependencies from other parts of the HAL since this will move to [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/).
+/// macros](crate::rtc::rtic::prelude).
+/// The clock rate must be specified at compile time so that the `Instant` and
+/// `Duration` types in
+/// [`TimerQueueBasedMonotonic`](rtic_time::monotonic::TimerQueueBasedMonotonic)
+/// can be specified.
 pub mod rtc_clock {
-    // TODO: What about SAMD11/21 where a generic clock must be setup, which could
-    // have a prescalar? Still needs to be a compile time freq.
     /// Type-level enum for available RTC clock rates.
     pub trait RtcClockRate {
-        const RATE: u32;
+        const RATE_HZ: u32;
     }
 
     /// Type level [`RtcClockRate`] variant for the 32.768 kHz clock rate.
     pub enum Clock32k {}
     impl RtcClockRate for Clock32k {
-        const RATE: u32 = 32_768;
+        const RATE_HZ: u32 = 32_768;
     }
 
     /// Type level [`RtcClockRate`] variant for the 1.024 kHz clock rate.
     pub enum Clock1k {}
     impl RtcClockRate for Clock1k {
-        const RATE: u32 = 1_024;
+        const RATE_HZ: u32 = 1_024;
     }
 
     /// Type level [`RtcClockRate`] variant for a custom clock rate
-    pub struct ClockCustom<const RATE: u32>;
-    impl<const RATE: u32> RtcClockRate for ClockCustom<RATE> {
-        const RATE: u32 = RATE;
+    pub struct ClockCustom<const RATE_HZ: u32>;
+    impl<const RATE_HZ: u32> RtcClockRate for ClockCustom<RATE_HZ> {
+        const RATE_HZ: u32 = RATE_HZ;
     }
 }
 
@@ -219,12 +240,12 @@ macro_rules! __internal_create_rtc_struct {
             type Instant = $crate::fugit::Instant<
                 <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                 1,
-                { <$clock_rate>::RATE },
+                { <$clock_rate>::RATE_HZ },
             >;
             type Duration = $crate::fugit::Duration<
                 <Self::Backend as $crate::rtic_time::timer_queue::TimerQueueBackend>::Ticks,
                 1,
-                { <$clock_rate>::RATE },
+                { <$clock_rate>::RATE_HZ },
             >;
         }
 
