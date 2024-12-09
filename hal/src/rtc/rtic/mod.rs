@@ -66,6 +66,7 @@
 //!
 //! TODO: Add note about sync delay and skipping ticks.
 //!
+//! TODO: Update example.
 //! # Example
 //!
 //! ```
@@ -89,9 +90,6 @@
 //!     }
 //! }
 //! ```
-
-// TODO: Before HAL PR
-// - Make sure every chip at least compiles
 
 mod v1 {
     use crate::rtc::{Count32Mode, Rtc};
@@ -159,8 +157,8 @@ pub mod prelude {
 /// [`clock::v2::rtcosc`](crate::clock::v2::rtcosc), but we want to avoid
 /// dependencies from other parts of the HAL since this will move to [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/).
 pub mod rtc_clock {
-    use core::marker::PhantomData;
-
+    // TODO: What about SAMD11/21 where a generic clock must be setup, which could
+    // have a prescalar? Still needs to be a compile time freq.
     /// Type-level enum for available RTC clock rates.
     pub trait RtcClockRate {
         const RATE: u32;
@@ -178,57 +176,11 @@ pub mod rtc_clock {
         const RATE: u32 = 1_024;
     }
 
-    // TODO: We may remove these, see:
-    // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
-
-    /// Type-level enum for available RTC sources.
-    pub trait RtcClockSource {}
-
-    /// Type level [`RtcClockSource`] variant for an internal clock source.
-    pub enum ClockInternal {}
-    impl RtcClockSource for ClockInternal {}
-
-    /// Type level [`RtcClockSource`] variant for an external clock source.
-    pub enum ClockExternal {}
-    impl RtcClockSource for ClockExternal {}
-
-    /* /// Types that can configure the RTC clock.
-    pub trait RtcClockSetter {
-        /// Sets the RTC clock source by modifying the register.
-        fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec>;
+    /// Type level [`RtcClockRate`] variant for a custom clock rate
+    pub struct ClockCustom<const RATE: u32>;
+    impl<const RATE: u32> RtcClockRate for ClockCustom<RATE> {
+        const RATE: u32 = RATE;
     }
-
-    /// Collection forming a complete RTC clock source, and that can configure
-    /// the clock source as an [`RtcClockSetter`].
-    pub struct ClockSetter<R: RtcClockRate, S: RtcClockSource> {
-        rate: PhantomData<R>,
-        source: PhantomData<S>,
-    }
-    impl RtcClockSetter for ClockSetter<Clock1k, ClockInternal> {
-        #[inline]
-        fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec> {
-            reg.rtcsel().ulp1k()
-        }
-    }
-    impl RtcClockSetter for ClockSetter<Clock1k, ClockExternal> {
-        #[inline]
-        fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec> {
-            reg.rtcsel().xosc1k()
-        }
-    }
-
-    impl RtcClockSetter for ClockSetter<Clock32k, ClockInternal> {
-        #[inline]
-        fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec> {
-            reg.rtcsel().ulp32k()
-        }
-    }
-    impl RtcClockSetter for ClockSetter<Clock32k, ClockExternal> {
-        #[inline]
-        fn set_source(reg: &mut W<RtcctrlSpec>) -> &mut W<RtcctrlSpec> {
-            reg.rtcsel().xosc32k()
-        }
-    } */
 }
 
 #[doc(hidden)]
@@ -251,20 +203,12 @@ macro_rules! __internal_create_rtc_struct {
         pub struct $name;
 
         impl $name {
-            /// Starts the `Monotonic`.
-            ///
             /// This method must be called only once.
-            pub fn start(
-                rtc: $crate::pac::Rtc,
-                mclk: &mut $crate::pac::Mclk,
-                osc32kctrl: &mut $crate::pac::Osc32kctrl,
-            ) {
+            pub fn start(rtc: $crate::pac::Rtc) {
                 use $crate::rtc::rtic::rtc_clock::*;
                 $crate::__internal_create_rtc_interrupt!($backend);
 
-                $crate::rtc::rtic::$backend::_start::<ClockSetter<$clock_rate, $clock_source>>(
-                    rtc, // TODO: Delete?, mclk, osc32kctrl,
-                );
+                $crate::rtc::rtic::$backend::_start(rtc);
             }
         }
 

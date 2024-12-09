@@ -26,11 +26,16 @@ impl LoopChecker {
 
 /// Type-level enum for RTC interrupts.
 pub trait RtcInterrupt {
+    /// Enable this interrupt.
     fn enable(rtc: &Rtc);
+    /// Returns whether the interrupt has been triggered.
     fn check_flag(rtc: &Rtc) -> bool;
+    /// Clears the interrupt flag so the ISR will not be called again
+    /// immediately.
     fn clear_flag(rtc: &Rtc);
 }
 
+/// Macro to easily declare an RTC interrupt.
 macro_rules! create_rtc_interrupt {
     ($mode:ident, $name:ident, $bit:ident) => {
         /// Type-level variant for the $name interrupt in $mode.
@@ -51,31 +56,43 @@ macro_rules! create_rtc_interrupt {
             #[inline]
             fn clear_flag(rtc: &Rtc) {
                 // SYNC: None
-                rtc.$mode().intflag().modify(|_, w| w.$bit().set_bit());
+                rtc.$mode().intflag().write(|w| w.$bit().set_bit());
             }
         }
     };
 }
 
-// TODO: Document
-// NOTE: All syncing should happen at this level.
+/// An abstraction of an RTC in a particular mode that provides low-level
+/// access and handles all register syncing issues using only associated
+/// functions.
 #[hal_macro_helper]
 pub trait RtcMode {
-    type Count: Copy;
+    /// The type of the COUNT register.
+    type Count: Copy + PartialEq + Eq;
+    /// The COUNT value representing a half period.
     const HALF_PERIOD: Self::Count;
+    /// The minimum number of ticks that compares need to be ahead of the COUNT
+    /// in order to trigger.
     const MIN_COMPARE_TICKS: Self::Count;
 
     // TODO: Test code
     fn check_loop(rtc: &Rtc, checker: &mut LoopChecker, item: &str);
     fn check_for_clock_anomaly(rtc: &Rtc, last_count: Self::Count, count: Self::Count);
 
+    /// Sets this mode in the CTRL register.
     unsafe fn set_mode(rtc: &Rtc);
+    /// Sets a compare value.
     unsafe fn set_compare(rtc: &Rtc, number: usize, value: Self::Count);
+    /// Retrieves a compare from the register.
     fn get_compare(rtc: &Rtc, number: usize) -> Self::Count;
+    /// Starts the RTC and does any required initialization for this mode.
     fn start_and_initialize(rtc: &Rtc);
+    /// Returns the current synced COUNT value.
     fn count(rtc: &Rtc) -> Self::Count;
+    /// Returns whether register syncing is currently happening.
     fn sync_busy(rtc: &Rtc) -> bool;
 
+    /// Resets the RTC, leaving it disabled in MODE0.
     #[inline]
     fn reset(rtc: &Rtc) {
         // Reset RTC back to initial settings, which disables it and enters mode 0.
@@ -100,21 +117,27 @@ pub trait RtcMode {
         }
     }
 
+    /// Enables an RTC interrupt.
     #[inline]
     fn enable_interrupt<I: RtcInterrupt>(rtc: &Rtc) {
         I::enable(rtc);
     }
 
+    /// Returns whether an RTC interrupt has been triggered.
     #[inline]
     fn check_interrupt_flag<I: RtcInterrupt>(rtc: &Rtc) -> bool {
         I::check_flag(rtc)
     }
 
+    /// Clears an RTC interrupt flag so the ISR will not be called again
+    /// immediately.
     #[inline]
     fn clear_interrupt_flag<I: RtcInterrupt>(rtc: &Rtc) {
         I::clear_flag(rtc);
     }
 
+    /// Waits for any register syncing to be completed, or returns immediately
+    /// if no currently syncing.
     #[inline]
     fn sync(rtc: &Rtc) {
         let mut loop_checker = LoopChecker::default();
@@ -124,6 +147,7 @@ pub trait RtcMode {
         }
     }
 
+    /// Disables the RTC.
     #[inline]
     fn disable(rtc: &Rtc) {
         // SYNC: Write
@@ -135,6 +159,7 @@ pub trait RtcMode {
         rtc.mode0().ctrla().modify(|_, w| w.enable().clear_bit());
     }
 
+    /// Enables the RTC.
     #[inline]
     fn enable(rtc: &Rtc) {
         // SYNC: Write
@@ -146,6 +171,7 @@ pub trait RtcMode {
         rtc.mode0().ctrla().modify(|_, w| w.enable().set_bit());
     }
 
+    /// Returns whether the RTC is enabled.
     #[inline]
     fn is_enabled(rtc: &Rtc) -> bool {
         // SYNC: Write (we just read though)
@@ -156,13 +182,13 @@ pub trait RtcMode {
         return rtc.mode0().ctrla().read().enable().bit_is_set();
     }
 
+    /// Waits until the COUNT register changes.
+    /// Note that this may not necessarily be the next tick due sync delay.
     #[inline]
     fn wait_for_count_change(rtc: &Rtc) -> Self::Count {
         let mut last_count = Self::count(rtc);
 
-        // If the clock is disabled then just continue.
-        // This can happen if a new task pends the interrupt while the queue is empty so
-        // that the timer is disabled, which can otherwise result in waiting
+        // If the clock is disabled then just continue since otherwise we would wait
         // forever.
         if !Self::is_enabled(rtc) {
             return last_count;
@@ -172,7 +198,12 @@ pub trait RtcMode {
         loop {
             let count = Self::count(rtc);
 
-            Self::check_for_clock_anomaly(rtc, last_count, count);
+            if count != last_count {
+                Self::check_for_clock_anomaly(rtc, last_count, count);
+
+                break count;
+            }
+
             Self::check_loop(rtc, &mut loop_checker, "wait_for_count_change");
 
             last_count = count;
@@ -244,8 +275,6 @@ pub mod mode0 {
         #[inline]
         fn start_and_initialize(rtc: &Rtc) {
             Self::enable(rtc);
-
-            // TODO: Can we just set the sync request once here on d21 and d11?
 
             // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
             #[hal_cfg("rtc-d5x")]
@@ -363,8 +392,6 @@ pub mod mode1 {
         #[inline]
         fn start_and_initialize(rtc: &Rtc) {
             Self::enable(rtc);
-
-            // TODO: Can we just set the sync request once here on d21 and d11?
 
             // Enable counter sync on SAMx5x, the counter cannot be read otherwise.
             #[hal_cfg("rtc-d5x")]
