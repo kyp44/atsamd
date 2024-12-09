@@ -10,11 +10,21 @@
 // TODO: Put this info somewhere in the documentation:
 // - Default clock source is the internal 1k on the SAMD5x.
 // - There is no default on SAMD11/21, a generic clock must be configured
+// - Must ensure that the RTC clock mast is enabled in PM (SAMD11/21) or Mclk
+//   (SAMx5x), which it is already on reset.
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __internal_interrupt_handler {
-    ($mode:ty, $rtic_int:ty) => {
+macro_rules! __internal_backend_methods {
+    {
+        mode = $mode:ty;
+        rtic_int = $rtic_int:ty;
+        rtc_pac = $rtc_pac: ident;
+        init_compares = $init_compares:block
+        statics = $statics:block
+        enable_interrupts = $enable_interrupts:block
+    }
+    => {
         /// RTC interrupt handler called before control passes to the
         /// [`TimerQueue`
         /// handler`](rtic_time::timer_queue::TimerQueue::on_monotonic_interrupt).
@@ -45,6 +55,51 @@ macro_rules! __internal_interrupt_handler {
 
             Self::timer_queue().on_monotonic_interrupt();
         }
+
+        /// Starts the clock.
+        ///
+        /// **Do not use this function directly.**
+        ///
+        /// Use the crate level macros instead, then call `start` on the monotonic.
+        pub fn _start($rtc_pac: pac::Rtc) {
+            // Disable the RTC.
+            <$mode>::disable(&$rtc_pac);
+
+            // Reset RTC back to initial settings, which disables it and enters mode 0.
+            <$mode>::reset(&$rtc_pac);
+
+            unsafe {
+                // Set the RTC mode
+                <$mode>::set_mode(&$rtc_pac);
+
+                $init_compares
+            }
+
+            // Timing critical, make sure we don't get interrupted.
+            critical_section::with(|_| {
+                // Start the timer and initialize it
+                <$mode>::start_and_initialize(&$rtc_pac);
+
+                // Clear the triggered compare flag
+                <$mode>::clear_interrupt_flag::<$rtic_int>(&$rtc_pac);
+
+                // Enable the compare interrupt
+                <$mode>::enable_interrupt::<$rtic_int>(&$rtc_pac);
+
+                $statics
+
+                $enable_interrupts
+
+                // Enable the RTC interrupt in the NVIC and set its priority.
+                // SAFETY: We take full ownership of the peripheral and interrupt vector,
+                // plus we are not using any external shared resources so we won't impact
+                // basepri/source masking based critical sections.
+                unsafe {
+                    crate::rtc::rtic::set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
+                    pac::NVIC::unmask(pac::Interrupt::RTC);
+                }
+            });
+        }
     };
 }
 
@@ -64,74 +119,22 @@ macro_rules! __internal_basic_backend {
 
         #[hal_macro_helper]
         impl $name {
-            crate::__internal_interrupt_handler!($mode, $rtic_int);
-
-            /// Starts the clock.
-            ///
-            /// **Do not use this function directly.**
-            ///
-            /// Use the [`rtc_mode0_monotonic`](crate::rtc_mode0_monotonic) macro
-            /// instead and then call `start` on the monotonic.
-            // TODO: Do we end up setting the clock here? What about simply ensuring that
-            // it's enabled?
-            /* pub fn _start<S: crate::rtc::rtic::rtc_clock::RtcClockSetter>(
-                rtc: pac::Rtc,
-                mclk: &mut pac::Mclk,
-                osc32kctrl: &mut pac::Osc32kctrl,
-            ) { */
-            // TODO: Can these be combined for both backend? There is a lot of code
-            // duplication.
-            pub fn _start(rtc: pac::Rtc) {
-                // Disable the RTC.
-                <$mode>::disable(&rtc);
-
-                // Set the RTC clock source.
-                // TODO: We may remove this, see:
-                // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
-                // osc32kctrl.rtcctrl().write(S::set_source);
-
-                // Enable the APBA clock for the RTC.
-                // TODO: We may remove this, see:
-                // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
-                // mclk.apbamask().modify(|_, w| w.rtc_().set_bit());
-
-                // Reset RTC back to initial settings, which disables it and enters mode 0.
-                <$mode>::reset(&rtc);
-
-                unsafe {
-                    // Set the RTC mode
-                    <$mode>::set_mode(&rtc);
-
+            crate::__internal_backend_methods! {
+                mode = $mode;
+                rtic_int = $rtic_int;
+                rtc_pac = rtc;
+                init_compares = {
                     // Set the the initial compare
                     <$mode>::set_compare(&rtc, 0, 0);
                 }
-
-                // Timing critical, make sure we don't get interrupted.
-                critical_section::with(|_| {
-                    // Start the timer and initialize it
-                    <$mode>::start_and_initialize(&rtc);
-
-                    // Clear the triggered compare flag
-                    <$mode>::clear_interrupt_flag::<$rtic_int>(&rtc);
-
-                    // Enable the compare interrupt
-                    <$mode>::enable_interrupt::<$rtic_int>(&rtc);
-
+                statics = {
                     // Initialize the timer queue
                     RTC_TQ.initialize(Self);
-
-                    // Enable the RTC interrupt in the NVIC and set its priority.
-                    // SAFETY: We take full ownership of the peripheral and interrupt vector,
-                    // plus we are not using any external shared resources so we won't impact
-                    // basepri/source masking based critical sections.
-                    unsafe {
-                        crate::rtc::rtic::set_monotonic_prio(
-                            pac::NVIC_PRIO_BITS,
-                            pac::Interrupt::RTC,
-                        );
-                        pac::NVIC::unmask(pac::Interrupt::RTC);
-                    }
-                });
+                }
+                enable_interrupts = {
+                    // Enable the compare interrupt
+                    <$mode>::enable_interrupt::<$rtic_int>(&rtc);
+                }
             }
         }
 
@@ -217,79 +220,28 @@ macro_rules! __internal_half_period_counting_backend {
 
         #[hal_macro_helper]
         impl $name {
-            /// Starts the clock.
-            ///
-            /// **Do not use this function directly.**
-            ///
-            /// Use the [`rtc_mode1_monotonic`](crate::rtc_mode1_monotonic) macro
-            /// instead and then call `start` on the monotonic.
-            // TODO: Do we end up setting the clock here? What about simply ensuring that
-            // it's enabled?
-            /* pub fn _start<S: crate::rtc::rtic::rtc_clock::RtcClockSetter>(
-                rtc: pac::Rtc,
-                // TODO: Evidently can conditional have an argument!
-                #[hal_cfg("rtc-d5x")] mclk: &mut pac::Mclk,
-                osc32kctrl: &mut pac::Osc32kctrl,
-            ) { */
-            // TODO: Can these be combined for both backend? There is a lot of code
-            // duplication.
-            pub fn _start(rtc: pac::Rtc) {
-                // Disable the RTC.
-                <$mode>::disable(&rtc);
-
-                // Set the RTC clock source.
-                // TODO: We may remove this, see:
-                // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
-                // osc32kctrl.rtcctrl().write(S::set_source);
-
-                // Enable the APBA clock for the RTC.
-                // TODO: We may remove this, see:
-                // https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2524171063
-                // mclk.apbamask().modify(|_, w| w.rtc_().set_bit());
-
-                // Reset RTC back to initial settings, which disables it and enters mode 0.
-                <$mode>::reset(&rtc);
-
-                unsafe {
-                    // Set the RTC mode
-                    <$mode>::set_mode(&rtc);
-
+            crate::__internal_backend_methods! {
+                mode = $mode;
+                rtic_int = $rtic_int;
+                rtc_pac = rtc;
+                init_compares = {
                     // Configure the compare registers
                     <$mode>::set_compare(&rtc, 0, 0);
                     <$mode>::set_compare(&rtc, 1, <$mode>::HALF_PERIOD);
                 }
-
-                // Timing critical, make sure we don't get interrupted.
-                critical_section::with(|_| {
-                    // Start the timer and initialize it
-                    <$mode>::start_and_initialize(&rtc);
-
-                    // Clear the triggered compare flag
-                    <$mode>::clear_interrupt_flag::<$rtic_int>(&rtc);
-
+                statics = {
                     // Make sure period counter is synced with the timer value
                     RTC_PERIOD_COUNT.store(0, Ordering::SeqCst);
 
                     // Initialize the timer queue
                     RTC_TQ.initialize(Self);
-
+                }
+                enable_interrupts = {
                     // Enable the compare and overflow interrupts.
                     <$mode>::enable_interrupt::<$rtic_int>(&rtc);
                     <$mode>::enable_interrupt::<$half_period_int>(&rtc);
                     <$mode>::enable_interrupt::<$overflow_int>(&rtc);
-
-                    // Enable the RTC interrupt in the NVIC and set its priority.
-                    // SAFETY: We take full ownership of the peripheral and interrupt vector,
-                    // plus we are not using any external shared resources so we won't impact
-                    // basepri/source masking based critical sections.
-                    unsafe {
-                        crate::rtc::rtic::set_monotonic_prio(
-                            pac::NVIC_PRIO_BITS,
-                            pac::Interrupt::RTC,
-                        );
-                        pac::NVIC::unmask(pac::Interrupt::RTC);
-                    }
-                });
+                }
             }
         }
 
@@ -332,7 +284,7 @@ macro_rules! __internal_half_period_counting_backend {
 
                     // Ensure that the COUNT has wrapped
                     // Due to syncing delay this may not be the case initially
-                    while <$mode>::HALF_PERIOD > 0x8000 {}
+                    while <$mode>::count(&rtc) > <$mode>::HALF_PERIOD {}
                 }
             }
 
