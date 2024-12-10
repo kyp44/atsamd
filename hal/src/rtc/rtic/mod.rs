@@ -19,24 +19,26 @@
 //! during the expected total duration of program execution.
 //!
 //! For all chip variants, the mode 1 monotonic uses [half-period
-//! counting](rtic_time::half_period_counter) to greatly extend the total
-//! monotonic period, which is due to the RTC for every variant having at least
-//! two compare registers in mode 1. However, in this mode, non-RTIC-task
-//! interrupts occur more frequently (see below), which are needed for
-//! half-period counting, so it is less efficient in that regard.
+//! counting](rtic_time::half_period_counter) to extend the monotonic counter to
+//! 64-bits. This is enabled by the fact that the RTC for every variant has
+//! at least two compare registers in mode 1. This greatly extends the total
+//! monotonic period. However, in this mode, half-period counting interrupts
+//! occur more frequently (see below) due to the hardware counter being only 16
+//! bits wide, so it is less efficient in that regard.
 //!
 //! For SAMD11/21 chips, the mode 0 monotonic only has a single compare register
 //! so that half-period counting is not possible. This significantly reduces the
-//! total monotonic period. The SAMx5x chips, however feature two compare
-//! registers in mode 0 so that half-period counting can be done. In either
-//! case, the mode 0 monotonic has extremely infrequent non-RTIC-task interrupts
-//! so is more efficient.
+//! total monotonic period. The SAMx5x chips, however, feature two compare
+//! registers in mode 0 so that half-period counting can be done. In the latter
+//! case, the mode 0 monotonic has extremely infrequent half-period counting
+//! interrupts and so is more efficient.
 //!
 //! NOTE: These monotonics currently live in the HAL for testing and refinement
 //! purposes. The intention is to eventually move them to the
-//! [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/) crate, which is a central location for peripheral-based
-//! RTIC monotonics for various microcontroller families. As such, be aware that
-//! this module could disappear at any time in the future.
+//! [`rtic-monotonics`](https://docs.rs/rtic-monotonics/latest/rtic_monotonics/) crate,
+//! which is a central location for peripheral-based RTIC monotonics for various
+//! microcontroller families. As such, be aware that this module could disappear
+//! at any time in the future.
 //!
 //! # Choosing a mode
 //!
@@ -49,25 +51,22 @@
 //! | **Mode 0 (SAMx5x)**    | ~571 million years | ~17.8 million years |
 //! | **Mode 1**             | ~571 million years | ~17.8 million years |
 //!
-//! The non-RTC-task interrupt periods for the monotonics are:
+//! The half-period counting interrupt periods for the monotonics are:
 //!
-//! **TODO: HERE TABLE BELOW NOT DONE**
+//! |                        | 1 kHz clock | 32 kHz clock |
+//! | ---------------------- | ----------- | ------------ |
+//! | **Mode 0 (SAMD11/21)** | Never       | Never        |
+//! | **Mode 0 (SAMx5x)**    | ~24 days    | ~18 hours    |
+//! | **Mode 1**             | 32 seconds  | 1 second     |
 //!
-//! |                        | 1 kHz clock        | 32 kHz clock        |
-//! | ---------------------- | ------------------ | ------------------- |
-//! | **Mode 0 (SAMD11/21)** | Never            | Never           |
-//! | **Mode 0 (SAMx5x)**    | ~48 days           | ~36 hours           |
-//! | **Mode 1**             | ~571 million years | ~17.8 million years |
-//!
-//!
-//! The time precision (i.e. the RTC tick time and shortest delay time) is as
+//! The time resolution (i.e. the RTC tick time and shortest delay time) is as
 //! follows:
 //!
 //! |              | 1 kHz clock | 32 kHz clock |
 //! | ------------ | ----------- | ------------ |
 //! | **Any mode** | ~977 μs     | ~31 μs       |
 //!
-//! # RTC clock selection
+//! # RTC clock selection (TODO)
 //!
 //! A monotonic using the desired RTC mode should be created with the
 //! appropriate [macro](crate::rtc::rtic::prelude). The RTC clock rate and
