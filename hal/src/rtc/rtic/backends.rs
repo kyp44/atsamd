@@ -1,18 +1,3 @@
-// NOTE: TODO: Move this elsewhere so it is not duplicated?
-// As explained in the datasheet, reading a read-synced register may result in
-// an old value, which we try to avoid by ensuring that SYNCBUSY is clear before
-// reading. A write to a write-synced register will be discarded if syncing is
-// happening during the write. As such we also ensure that SYNCBUSY is clear
-// before writing to a synced register. Every register access should be prefaced
-// by a SYNC comment indicating the required synchronization, which indicates
-// that this access was checked and accounted for.
-
-// TODO: Put this info somewhere in the documentation:
-// - Default clock source is the internal 1k on the SAMD5x.
-// - There is no default on SAMD11/21, a generic clock must be configured
-// - Must ensure that the RTC clock mast is enabled in PM (SAMD11/21) or Mclk
-//   (SAMx5x), which it is already on reset.
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __internal_backend_methods {
@@ -28,6 +13,9 @@ macro_rules! __internal_backend_methods {
         /// RTC interrupt handler called before control passes to the
         /// [`TimerQueue`
         /// handler`](rtic_time::timer_queue::TimerQueue::on_monotonic_interrupt).
+        ///
+        /// # Safety
+        /// This should only be called from the RTC interrupt handler.
         #[inline]
         pub unsafe fn interrupt_handler() {
             let rtc = pac::Rtc::steal();
@@ -95,7 +83,7 @@ macro_rules! __internal_backend_methods {
                 // plus we are not using any external shared resources so we won't impact
                 // basepri/source masking based critical sections.
                 unsafe {
-                    crate::rtc::rtic::set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
+                    $crate::rtc::rtic::set_monotonic_prio(pac::NVIC_PRIO_BITS, pac::Interrupt::RTC);
                     pac::NVIC::unmask(pac::Interrupt::RTC);
                 }
             });
@@ -107,10 +95,10 @@ macro_rules! __internal_backend_methods {
 #[macro_export]
 macro_rules! __internal_basic_backend {
     ($name:ident, $mode:ty, $rtic_int:ty) => {
-        use crate::pac;
-        use crate::rtc::rtic::modes::RtcMode;
         use atsamd_hal_macros::hal_macro_helper;
         use rtic_time::timer_queue::{TimerQueue, TimerQueueBackend};
+        use $crate::pac;
+        use $crate::rtc::rtic::modes::RtcMode;
 
         /// Basic RTC-based [`TimerQueueBackend`] without period counting.
         pub struct $name;
@@ -119,7 +107,7 @@ macro_rules! __internal_basic_backend {
 
         #[hal_macro_helper]
         impl $name {
-            crate::__internal_backend_methods! {
+            $crate::__internal_backend_methods! {
                 mode = $mode;
                 rtic_int = $rtic_int;
                 rtc_pac = rtc;
@@ -191,8 +179,6 @@ macro_rules! __internal_basic_backend {
 #[macro_export]
 macro_rules! __internal_half_period_counting_backend {
     ($name:ident, $mode:ty, $rtic_int:ty, $half_period_int:ty, $overflow_int:ty) => {
-        use crate::pac;
-        use crate::rtc::rtic::modes::RtcMode;
         use atsamd_hal_macros::hal_macro_helper;
         use core::sync::atomic::Ordering;
         use portable_atomic::AtomicU64;
@@ -200,6 +186,8 @@ macro_rules! __internal_half_period_counting_backend {
             half_period_counter::calculate_now,
             timer_queue::{TimerQueue, TimerQueueBackend},
         };
+        use $crate::pac;
+        use $crate::rtc::rtic::modes::RtcMode;
 
         struct TimerValue(<$mode as RtcMode>::Count);
         impl rtic_time::half_period_counter::TimerValue for TimerValue {
@@ -220,7 +208,7 @@ macro_rules! __internal_half_period_counting_backend {
 
         #[hal_macro_helper]
         impl $name {
-            crate::__internal_backend_methods! {
+            $crate::__internal_backend_methods! {
                 mode = $mode;
                 rtic_int = $rtic_int;
                 rtc_pac = rtc;

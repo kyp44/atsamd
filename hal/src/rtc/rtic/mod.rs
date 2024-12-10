@@ -31,7 +31,9 @@
 //! total monotonic period. The SAMx5x chips, however, feature two compare
 //! registers in mode 0 so that half-period counting can be done. In the latter
 //! case, the mode 0 monotonic has extremely infrequent half-period counting
-//! interrupts and so is more efficient.
+//! interrupts and so is more efficient. In fact, the mode 1 monotonic on SAMx5x
+//! platforms offers nothing except more undesirable more frequent interrupts,
+//! so its use is not recommended.
 //!
 //! NOTE: These monotonics currently live in the HAL for testing and refinement
 //! purposes. The intention is to eventually move them to the
@@ -66,52 +68,75 @@
 //! | ------------ | ----------- | ------------ |
 //! | **Any mode** | ~977 μs     | ~31 μs       |
 //!
-//! # RTC clock selection (TODO)
+//! It should be apparent from these numbers that the mode 1 monotonic offers
+//! nothing but more frequent interrupts on SAMx5x platforms.
+//!
+//! # RTC clock selection
+//!
+//! Prior to starting the monotonic, the RTC clock source must be configured
+//! using the [`atsamd-hal`](https://docs.rs/atsamd-hal/latest/atsamd_hal/index.html)
+//! crate. On SAMD11/21 platforms, the RTC clock must be setup as a
+//! [generic clock](https://docs.rs/atsamd-hal/latest/atsamd_hal/clock/struct.GenericClockController.html).
+//! On SAMx5x platforms the RTC clock must be selected from either the 1.1024
+//! kHz clock or the 32.768 kHz clock, either of which can be internal or
+//! external.
+//!
+//! TODO: Update HAL links and [should proof of RTC clock setup be required?](https://github.com/atsamd-rs/atsamd/issues/765#issuecomment-2526974751)
+//!
+//! # Usage
 //!
 //! A monotonic using the desired RTC mode should be created with the
-//! appropriate [macro](crate::rtc::rtic::prelude). The RTC clock rate and
-//! source must also be specified when calling the macro, using the types in
-//! [`rtc_clock`]. The first macro argument is the name of the global structure
-//! that will implement [`Monotonic`](rtic_time::Monotonic). The second argument
-//! must be a clock rate type that implements
-//! [`RtcClockRate`](rtc_clock::RtcClockRate), and the third argument must be a
-//! type clock source implementing
-//! [`RtcClockSource`](rtc_clock::RtcClockSource). See below for an example.
+//! appropriate [macro](crate::rtc::rtic::prelude). The first macro argument is
+//! the name of the global structure that will implement
+//! [`Monotonic`](rtic_time::Monotonic). The RTC clock rate must be
+//! known at compile time, and so the appropriate type from [`rtc_clock`] must
+//! be passed to the macro as the second argument.
 //!
+//! Sometime during initialization, the monotonic also must be started by called
+//! the `start` method on the created monotonic. The [`Rtc`](pac::Rtc) struct
+//! must be passed to the `start` to ensure that the monotonic has complete
+//! control of the RTC.
 //!
-//!
-//! TODO: Add note about sync delay and skipping ticks.
-//!
-//! TODO: Update example.
 //! # Example
 //!
 //! ```
 //! use atsamd_hal::prelude::*;
-//! rtc_mode0_monotonic!(Mono, rtc_clock::Clock32k, rtc_clock::ClockInternal);
+//!
+//! // Create the monotonic struct named `Mono`
+//! rtc_mode0_monotonic!(Mono, rtc_clock::Clock32k);
 //!
 //! fn init() {
 //!     # // This is normally provided by the selected PAC
 //!     # let rtc = unsafe { core::mem::transmute(()) };
 //!     # let mut mclk = unsafe { core::mem::transmute(()) };
 //!     # let mut osc32kctrl = unsafe { core::mem::transmute(()) };
+//!     // Here the RTC clock source should be configured using the HAL
+//!
 //!     // Start the monotonic
-//!     Mono::start(rtc, &mut mclk, &mut osc32kctrl);
+//!     Mono::start(rtc);
 //! }
 //!
 //! async fn usage() {
 //!     loop {
 //!          // Use the monotonic
 //!          let timestamp = Mono::now();
+//!
+//!          Mono::delay_until(timestamp + 2u32.secs()).await;
 //!          Mono::delay(100u32.millis()).await;
 //!     }
 //! }
 //! ```
-
-// TODO: Put this info somewhere in the documentation:
-// - Default clock source is the internal 1k on the SAMD5x.
-// - There is no default on SAMD11/21, a generic clock must be configured
-// - Must ensure that the RTC clock mast is enabled in PM (SAMD11/21) or Mclk
-//   (SAMx5x), which it is already on reset.
+//!
+//! # Other notes
+//!
+//! The number returned by
+//! [`Monotonic::now().ticks()`](rtic_monotonic::Monotonic::now) will always
+//! increase (barring monotonic rollover). However, due to the register
+//! [synchronization delay](https://onlinedocs.microchip.com/oxy/GUID-F5813793-E016-46F5-A9E2-718D8BCED496-en-US-14/GUID-0C52DB00-4BF6-4F41-85B5-B76529875364.html),
+//! the number returned may not always increment by one every time it changes.
+//! In fact, testing shows that it typically increments by four every time it
+//! changes. This is true regardless of the clock rate used, as the
+//! synchronization delay scales along with the clock period.
 
 mod v1 {
     use crate::rtc::{Count32Mode, Rtc};
@@ -197,7 +222,7 @@ pub mod rtc_clock {
     }
 
     /// Type level [`RtcClockRate`] variant for a custom clock rate
-    pub struct ClockCustom<const RATE_HZ: u32>;
+    pub enum ClockCustom<const RATE_HZ: u32> {}
     impl<const RATE_HZ: u32> RtcClockRate for ClockCustom<RATE_HZ> {
         const RATE_HZ: u32 = RATE_HZ;
     }
@@ -253,23 +278,23 @@ macro_rules! __internal_create_rtc_struct {
     };
 }
 
-/// Create an RTIC v2 monotonic using the RTC in mode 0.
+/// Create an RTIC v2 monotonic that uses the RTC in mode 0.
 ///
 /// See the [`rtic`](crate::rtc::rtic) module for details.
 #[macro_export]
 macro_rules! rtc_mode0_monotonic {
-    ($name:ident, $clock_rate: ty, $clock_source: ty) => {
-        $crate::__internal_create_rtc_struct!($name, RtcMode0Backend, $clock_rate, $clock_source);
+    ($name:ident, $clock_rate: ty) => {
+        $crate::__internal_create_rtc_struct!($name, RtcMode0Backend, $clock_rate);
     };
 }
 
-/// Create an RTIC v2 monotonic based on RTC in mode 1.
+/// Create an RTIC v2 monotonic that uses the RTC in mode 1.
 ///
 /// See the [`rtic`](crate::rtc::rtic) module for details.
 #[macro_export]
 macro_rules! rtc_mode1_monotonic {
-    ($name:ident, $clock_rate: ty, $clock_source: ty) => {
-        $crate::__internal_create_rtc_struct!($name, RtcMode1Backend, $clock_rate, $clock_source);
+    ($name:ident, $clock_rate: ty) => {
+        $crate::__internal_create_rtc_struct!($name, RtcMode1Backend, $clock_rate);
     };
 }
 
