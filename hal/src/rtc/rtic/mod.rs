@@ -193,7 +193,7 @@ pub mod prelude {
     pub use fugit::{self, ExtU32, ExtU32Ceil, ExtU64, ExtU64Ceil};
 }
 
-/// Types used to specify the RTC clock source at compile time when creating the
+/// Types used to specify the RTC clock rate at compile time when creating the
 /// monotonics.
 ///
 /// These types utilize [type-level programming](crate::typelevel)
@@ -243,7 +243,7 @@ macro_rules! __internal_create_rtc_interrupt {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __internal_create_rtc_struct {
-    ($name:ident, $backend:ident, $clock_rate:ty, $clock_source:ty) => {
+    ($name:ident, $backend:ident, $clock_rate:ty) => {
         /// A `Monotonic` based on the RTC peripheral.
         pub struct $name;
 

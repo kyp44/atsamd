@@ -323,6 +323,9 @@ pub mod mode0 {
 
     #[hal_cfg("rtc-d5x")]
     crate::__internal_basic_backend!(RtcBackend, RtcMode0, Compare0);
+    /* crate::__internal_half_period_counting_backend!(
+        RtcBackend, RtcMode0, Compare0, Compare1, Overflow
+    ); */
 }
 
 #[hal_macro_helper]
