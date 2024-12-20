@@ -73,9 +73,9 @@
 //! kHz clock or the 32.768 kHz clock, either of which can be internal or
 //! external.
 //!
-//! NOTE: Eventually, starting the monotonic will require proof that the RTC
+//! **NOTE: Eventually, starting the monotonic will require proof that the RTC
 //! clock has been configured. However, this requires v2 of the clock API for
-//! SAMx5x chips, which is not yet fully supported in the rest of the HAL.
+//! SAMx5x chips, which is not yet fully supported in the rest of the HAL.**
 //!
 //! # Usage
 //!
@@ -108,7 +108,7 @@
 //!     # let rtc = unsafe { core::mem::transmute(()) };
 //!     # let mut mclk = unsafe { core::mem::transmute(()) };
 //!     # let mut osc32kctrl = unsafe { core::mem::transmute(()) };
-//!     // Here the RTC clock source should be configured using the HAL
+//!     // Here the RTC clock source should be configured using the clocks API
 //!
 //!     // Start the monotonic
 //!     Mono::start(rtc);
