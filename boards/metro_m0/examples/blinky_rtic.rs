@@ -15,7 +15,6 @@ use hal::rtc::rtic::rtc_clock;
 use rtic::app;
 
 hal::rtc_monotonic!(Mono, rtc_clock::ClockCustom<2_048>);
-//hal::rtc_monotonic!(Mono, rtc_clock::Clock32k);
 
 #[app(device = bsp::pac, dispatchers = [EVSYS])]
 mod app {
@@ -54,7 +53,7 @@ mod app {
         clocks.configure_standby(ClockGenId::Gclk2, true);
         let _ = clocks.rtc(&rtc_clock_src).unwrap();
         
-        let mut red_led: bsp::RedLed = pins.d13.into();
+        let red_led: bsp::RedLed = pins.d13.into();
         
         // Start the monotonic
         Mono::start(peripherals.rtc);
