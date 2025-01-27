@@ -5,13 +5,13 @@
 #![no_std]
 #![no_main]
 
+use bsp::hal;
+use hal::rtc::rtic::rtc_clock;
 use metro_m0 as bsp;
 #[cfg(not(feature = "use_semihosting"))]
 use panic_halt as _;
 #[cfg(feature = "use_semihosting")]
 use panic_semihosting as _;
-use bsp::hal;
-use hal::rtc::rtic::rtc_clock;
 use rtic::app;
 
 hal::rtc_monotonic!(Mono, rtc_clock::ClockCustom<2_048>);
@@ -45,16 +45,17 @@ mod app {
             &mut peripherals.sysctrl,
             &mut peripherals.nvmctrl,
         );
-        
-        // Set the RTC clock to use a 2.048 kHz clock derived from the external 32 kHz oscillator.
+
+        // Set the RTC clock to use a 2.048 kHz clock derived from the external 32 kHz
+        // oscillator.
         let rtc_clock_src = clocks
             .configure_gclk_divider_and_source(ClockGenId::Gclk2, 16, ClockSource::Xosc32k, false)
             .unwrap();
         clocks.configure_standby(ClockGenId::Gclk2, true);
         let _ = clocks.rtc(&rtc_clock_src).unwrap();
-        
+
         let red_led: bsp::RedLed = pins.d13.into();
-        
+
         // Start the monotonic
         Mono::start(peripherals.rtc);
 
