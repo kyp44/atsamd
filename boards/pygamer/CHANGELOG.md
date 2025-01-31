@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/kyp44/atsamd/compare/pygamer-0.14.1...pygamer-0.14.2) - 2025-01-31
+
+### Other
+
+- Merge branch 'master' into release-plz-2024-11-12T14-40-22Z
+
 ## [0.14.1](https://github.com/atsamd-rs/atsamd/compare/pygamer-0.14.0...pygamer-0.14.1) - 2025-01-31
 
 ### Dependencies
