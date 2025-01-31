@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/kyp44/atsamd/compare/atsame54_xpro-0.11.0...atsame54_xpro-0.12.0) - 2025-01-31
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.11.0](https://github.com/atsamd-rs/atsamd/compare/atsame54_xpro-0.10.1...atsame54_xpro-0.11.0) - 2025-01-13
 
 ### Other
