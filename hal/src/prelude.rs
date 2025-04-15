@@ -1,8 +1,8 @@
 //! Import the prelude to gain convenient access to helper traits
 pub use crate::eic::EicPin;
 pub use crate::timer_traits::InterruptDrivenTimer;
-pub use fugit::ExtU64 as _;
-pub use fugit::ExtU64Ceil as _;
+pub use fugit::ExtU32 as _;
+pub use fugit::ExtU32Ceil as _;
 pub use fugit::RateExtU32 as _;
 
 // embedded-hal doesn’t yet have v2 in its prelude, so we need to

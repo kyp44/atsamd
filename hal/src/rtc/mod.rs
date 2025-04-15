@@ -323,7 +323,7 @@ impl TimerParams {
     pub fn new_us(timeout: impl Into<Nanoseconds>, src_freq: impl Into<Hertz>) -> Self {
         let timeout = timeout.into();
         let src_freq = src_freq.into();
-        let ticks = timeout.to_nanos() * src_freq.to_Hz() as u64 / 1_000_000_000;
+        let ticks = timeout.to_nanos() as u64 * src_freq.to_Hz() as u64 / 1_000_000_000;
         Self::new_from_ticks(ticks)
     }
 
