@@ -4,6 +4,7 @@ use core::convert::Infallible;
 use atsamd_hal_macros::hal_cfg;
 use fugit::NanosDurationU32;
 
+use crate::ehal::delay::DelayNs;
 use crate::ehal_02::timer::{CountDown, Periodic};
 use crate::pac::tc0::Count16 as Count16Reg;
 use crate::pac::{Mclk, Tc2, Tc3};
@@ -70,6 +71,16 @@ where
         }
         .unwrap(); // wait() is Infallible
         Ok(())
+    }
+}
+impl<TC> DelayNs for TimerCounter<TC>
+where
+    TC: Count16,
+{
+    fn delay_ns(&mut self, ns: u32) {
+        InterruptDrivenTimer::start(self, NanosDurationU32::nanos(ns));
+        // Cannot fail, so no reason handle a possible error
+        let _ = nb::block!(InterruptDrivenTimer::wait(self));
     }
 }
 
