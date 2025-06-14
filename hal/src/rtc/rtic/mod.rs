@@ -178,7 +178,10 @@ pub mod v1 {
 
 mod backends;
 
-use super::modes::{mode0::RtcMode0, mode1::RtcMode1, RtcMode};
+#[hal_cfg("rtc-d5x")]
+use super::modes::{mode0::RtcMode0, RtcMode};
+#[hal_cfg(any("rtc-d11", "rtc-d21"))]
+use super::modes::{mode1::RtcMode1, RtcMode};
 use crate::interrupt::{Priority, NVIC_PRIO_BITS};
 use atsamd_hal_macros::hal_cfg;
 
@@ -224,10 +227,13 @@ trait RtcModeMonotonic: RtcMode {
     /// in order to trigger.
     const MIN_COMPARE_TICKS: Self::Count;
 }
+
+#[hal_cfg("rtc-d5x")]
 impl RtcModeMonotonic for RtcMode0 {
     const HALF_PERIOD: Self::Count = 0x8000_0000;
     const MIN_COMPARE_TICKS: Self::Count = 8;
 }
+#[hal_cfg(any("rtc-d11", "rtc-d21"))]
 impl RtcModeMonotonic for RtcMode1 {
     const HALF_PERIOD: Self::Count = 0x8000;
     const MIN_COMPARE_TICKS: Self::Count = 8;
