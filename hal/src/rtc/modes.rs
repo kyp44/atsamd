@@ -607,7 +607,7 @@ pub mod mode2 {
 
         #[inline]
         #[hal_macro_helper]
-        #[cfg(feature = "rtic")]
+        #[cfg(any(feature = "rtic", feature = "embassy-time"))]
         fn get_compare(rtc: &Rtc, _number: usize) -> Self::Count {
             // SYNC: Write (we just read though)
             #[hal_cfg(any("rtc-d11", "rtc-d21"))]
