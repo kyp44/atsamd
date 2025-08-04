@@ -39,7 +39,7 @@ version = "0.3.1"
 
 [dependencies.embedded-sdmmc]
 optional = true
-version = "0.3"
+version = "0.9"
 
 [dev-dependencies]
 cortex-m = "0.7"
