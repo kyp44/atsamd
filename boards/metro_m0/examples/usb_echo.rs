@@ -44,7 +44,7 @@ fn main() -> ! {
     };
 
     unsafe {
-        USB_SERIAL = Some(SerialPort::new(bus_allocator));
+        let _ = (*USB_SERIAL.get()).set(SerialPort::new(bus_allocator));
         USB_BUS = Some(
             UsbDeviceBuilder::new(bus_allocator, UsbVidPid(0x16c0, 0x27dd))
                 .strings(&[StringDescriptors::new(LangID::EN)
@@ -72,12 +72,15 @@ fn main() -> ! {
 
 static mut USB_ALLOCATOR: Option<UsbBusAllocator<UsbBus>> = None;
 static mut USB_BUS: Option<UsbDevice<UsbBus>> = None;
-static mut USB_SERIAL: Option<SerialPort<UsbBus>> = None;
+//static mut USB_SERIAL: Option<SerialPort<UsbBus>> = None;
+
+use core::cell::{OnceCell, UnsafeCell};
+static mut USB_SERIAL: UnsafeCell<OnceCell<SerialPort<UsbBus>>> = UnsafeCell::new(OnceCell::new());
 
 fn poll_usb() {
     unsafe {
         if let Some(usb_dev) = USB_BUS.as_mut() {
-            if let Some(serial) = USB_SERIAL.as_mut() {
+            if let Some(serial) = (*USB_SERIAL.get()).get_mut() {
                 usb_dev.poll(&mut [serial]);
                 let mut buf = [0u8; 64];
 
