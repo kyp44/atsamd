@@ -1,9 +1,14 @@
 #![no_std]
 #![no_main]
 
+use core::cell::OnceCell;
+use core::cell::UnsafeCell;
+
+use cortex_m::interrupt::CriticalSection;
 use panic_halt as _;
 
 use cortex_m::asm::delay as cycle_delay;
+use cortex_m::interrupt::{free, Mutex};
 use cortex_m::peripheral::NVIC;
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
@@ -32,21 +37,24 @@ fn main() -> ! {
     let pins = bsp::Pins::new(peripherals.port);
     let mut red_led: bsp::RedLed = pins.d13.into();
 
-    let bus_allocator = unsafe {
-        USB_ALLOCATOR = Some(bsp::usb_allocator(
+    free(|cs| {
+        // These are safe because the data is static and this is a critical section.
+        let allocator_cell = unsafe { &mut *USB_ALLOCATOR.borrow(cs).get() };
+        let package_cell = unsafe { &mut *USB_PACKAGE.borrow(cs).get() };
+
+        let _ = allocator_cell.set(bsp::usb_allocator(
             peripherals.usb,
             &mut clocks,
             &mut peripherals.pm,
             pins.usb_dm,
             pins.usb_dp,
         ));
-        USB_ALLOCATOR.as_ref().unwrap()
-    };
+        let bus_allocator = allocator_cell.get().unwrap();
 
-    unsafe {
-        USB_SERIAL = Some(SerialPort::new(bus_allocator));
-        USB_BUS = Some(
-            UsbDeviceBuilder::new(bus_allocator, UsbVidPid(0x16c0, 0x27dd))
+        // It seems that this has to be created before the `UsbDevice` for some reason.
+        let serial = SerialPort::new(bus_allocator);
+        let _ = package_cell.set(UsbPackage {
+            device: UsbDeviceBuilder::new(bus_allocator, UsbVidPid(0x16c0, 0x27dd))
                 .strings(&[StringDescriptors::new(LangID::EN)
                     .manufacturer("Fake company")
                     .product("Serial port")
@@ -54,8 +62,9 @@ fn main() -> ! {
                 .expect("Failed to set strings")
                 .device_class(USB_CLASS_CDC)
                 .build(),
-        );
-    }
+            serial,
+        });
+    });
 
     unsafe {
         core.NVIC.set_priority(interrupt::USB, 1);
@@ -70,26 +79,34 @@ fn main() -> ! {
     }
 }
 
-static mut USB_ALLOCATOR: Option<UsbBusAllocator<UsbBus>> = None;
-static mut USB_BUS: Option<UsbDevice<UsbBus>> = None;
-static mut USB_SERIAL: Option<SerialPort<UsbBus>> = None;
+struct UsbPackage {
+    pub device: UsbDevice<'static, UsbBus>,
+    pub serial: SerialPort<'static, UsbBus>,
+}
+
+static USB_ALLOCATOR: Mutex<UnsafeCell<OnceCell<UsbBusAllocator<UsbBus>>>> =
+    Mutex::new(UnsafeCell::new(OnceCell::new()));
+static USB_PACKAGE: Mutex<UnsafeCell<OnceCell<UsbPackage>>> =
+    Mutex::new(UnsafeCell::new(OnceCell::new()));
 
 fn poll_usb() {
-    unsafe {
-        if let Some(usb_dev) = USB_BUS.as_mut() {
-            if let Some(serial) = USB_SERIAL.as_mut() {
-                usb_dev.poll(&mut [serial]);
-                let mut buf = [0u8; 64];
+    // This is safe because the data is static, and only this ISR
+    // accesses the package after initialization.
+    let usb_package = unsafe {
+        (*USB_PACKAGE.borrow(&CriticalSection::new()).get())
+            .get_mut()
+            .unwrap()
+    };
 
-                if let Ok(count) = serial.read(&mut buf) {
-                    for (i, c) in buf.iter().enumerate() {
-                        if i >= count {
-                            break;
-                        }
-                        serial.write(&[*c]).ok();
-                    }
-                };
-            };
+    usb_package.device.poll(&mut [&mut usb_package.serial]);
+    let mut buf = [0u8; 64];
+
+    if let Ok(count) = usb_package.serial.read(&mut buf) {
+        for (i, c) in buf.iter().enumerate() {
+            if i >= count {
+                break;
+            }
+            usb_package.serial.write(&[*c]).ok();
         }
     };
 }
