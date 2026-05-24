@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.4](https://github.com/kyp44/atsamd/compare/atsamd-hal-0.23.3...atsamd-hal-0.23.4) - 2026-05-24
+
+### Fixed
+
+- *(rtc)* disable compare interrupt instead of stopping the RTC counter ([#992](https://github.com/kyp44/atsamd/pull/992))
+
+### Other
+
+- Fix nightly clippy lint ([#1006](https://github.com/kyp44/atsamd/pull/1006))
+- Update DMAC documentation ([#1005](https://github.com/kyp44/atsamd/pull/1005))
+- Make ADC `check_read_discard` private again ([#1003](https://github.com/kyp44/atsamd/pull/1003))
+
 ## [0.23.3](https://github.com/atsamd-rs/atsamd/compare/atsamd-hal-0.23.2...atsamd-hal-0.23.3) - 2026-03-02
 
 ### Fixed
